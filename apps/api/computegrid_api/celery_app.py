@@ -1,0 +1,44 @@
+"""Celery application and durable job task adapter."""
+
+from __future__ import annotations
+
+import socket
+from uuid import UUID
+
+from celery import Celery, Task
+from celery.exceptions import Reject
+
+from computegrid_api.config import get_broker_settings
+from computegrid_api.jobs.execution import ExecutionDisposition, execute_job
+
+broker_settings = get_broker_settings()
+
+celery_app = Celery("computegrid", broker=broker_settings.broker_url)
+celery_app.conf.update(
+    accept_content=["json"],
+    broker_connection_retry_on_startup=True,
+    broker_transport_options={"confirm_publish": True},
+    task_acks_on_failure_or_timeout=False,
+    task_acks_late=True,
+    task_default_exchange="computegrid",
+    task_default_exchange_type="direct",
+    task_default_queue=broker_settings.job_queue,
+    task_default_routing_key=broker_settings.job_queue,
+    task_ignore_result=True,
+    task_reject_on_worker_lost=True,
+    task_serializer="json",
+    worker_prefetch_multiplier=1,
+)
+
+
+def _execute_job_task(task: Task, job_id: str) -> str:
+    """Execute one message and requeue duplicates until durable completion."""
+    request_hostname = getattr(task.request, "hostname", None)
+    worker_id = str(request_hostname or socket.gethostname())
+    disposition = execute_job(UUID(job_id), worker_id=worker_id)
+    if disposition == ExecutionDisposition.IN_PROGRESS:
+        raise Reject("job execution is already in progress", requeue=True)
+    return disposition.value
+
+
+celery_app.task(bind=True, name="computegrid.execute_job", acks_late=True)(_execute_job_task)

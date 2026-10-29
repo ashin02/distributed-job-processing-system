@@ -1,0 +1,14 @@
+.env
+.git
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.venv
+apps/web/dist
+apps/web/node_modules
+build
+dist
+htmlcov
+__pycache__
+*.egg-info
+*.pyc

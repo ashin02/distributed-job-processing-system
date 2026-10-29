@@ -1,0 +1,94 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_TEST_DB: ${POSTGRES_TEST_DB:?Set POSTGRES_TEST_DB in .env}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-test-database.sh:/docker-entrypoint-initdb.d/10-test-database.sh:ro
+
+  rabbitmq:
+    image: rabbitmq:4.1-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:?Set RABBITMQ_USER in .env}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:${RABBITMQ_PORT:-5672}:5672"
+      - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+
+  migrate:
+    build: .
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    environment: &computegrid-environment
+      COMPUTEGRID_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      COMPUTEGRID_BROKER_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672//
+      COMPUTEGRID_JOB_QUEUE: ${COMPUTEGRID_JOB_QUEUE:-computegrid.jobs}
+      COMPUTEGRID_DEVELOPMENT_API_TOKEN: ${COMPUTEGRID_DEVELOPMENT_API_TOKEN:?Set COMPUTEGRID_DEVELOPMENT_API_TOKEN in .env}
+      COMPUTEGRID_DEVELOPMENT_CLIENT_ID: ${COMPUTEGRID_DEVELOPMENT_CLIENT_ID:-local-development}
+      COMPUTEGRID_CORS_ORIGINS: ${COMPUTEGRID_CORS_ORIGINS:-["http://localhost:5173","http://127.0.0.1:5173"]}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build: .
+    environment: *computegrid-environment
+    ports:
+      - "127.0.0.1:${COMPUTEGRID_API_PORT:-8000}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  relay:
+    build: .
+    command: ["python", "-m", "computegrid_api.outbox_relay"]
+    environment: *computegrid-environment
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+
+  worker:
+    build: .
+    command:
+      [
+        "python",
+        "-m",
+        "celery",
+        "-A",
+        "computegrid_api.celery_app:celery_app",
+        "worker",
+        "--loglevel=INFO",
+        "--concurrency=${COMPUTEGRID_WORKER_CONCURRENCY:-2}",
+      ]
+    environment: *computegrid-environment
+    restart: unless-stopped
+    stop_grace_period: 30s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  rabbitmq_data:

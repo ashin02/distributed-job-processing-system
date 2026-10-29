@@ -6,25 +6,61 @@
 >
 > **Context:** Inspired by general engineering challenges in cloud-hosted compute services. This is an independent learning project, not a D-Wave product, implementation, or affiliation.
 
-## Current implementation: Milestone 1A
+## Current implementation: Milestone 2A
 
-The repository currently contains the FastAPI application foundation and a liveness endpoint. It does not yet include job submission, persistence, queues, workers, caching, or deployment configuration.
+The repository contains the FastAPI application, PostgreSQL persistence, authenticated job APIs, a transactional outbox relay, RabbitMQ transport, Celery workers, and a React/TypeScript operations dashboard. New jobs and their outbox events are committed atomically, client-scoped idempotency is enforced by PostgreSQL, and `monte_carlo_pi` jobs execute asynchronously. The relay uses RabbitMQ publisher confirms before marking events published, while workers acknowledge late only after a terminal result or error is committed. Advanced retry policy, abandoned-attempt recovery, autoscaling, caching, monitoring, and Kubernetes deployment remain deferred.
 
 ### Local setup
 
-Python 3.12 and [uv](https://docs.astral.sh/uv/) are required. Create the project-local environment and install the application with its development tools:
+Python 3.12, [uv](https://docs.astral.sh/uv/), Node.js 20.19 or newer, and npm are required. Create the project-local Python environment and install the frontend dependencies:
 
 ```bash
-make install
+make install-all
 ```
 
 This installs Python 3.12 through uv when it is not already available, creates `.venv`, and installs both runtime and development dependencies. Make targets invoke `.venv/bin/python` directly, so activating the virtual environment is optional.
 
-Start the development server:
+Create local configuration and replace the example password with a development-only value:
 
 ```bash
-make run
+cp .env.example .env
 ```
+
+Also replace `COMPUTEGRID_DEVELOPMENT_API_TOKEN` with a random local token. This single-token authentication mode is for development only; its configured client ID owns every job submitted with that token.
+
+Start PostgreSQL and RabbitMQ, then apply the schema migration when running processes directly on the host:
+
+```bash
+make dev-deps-up
+make migrate
+```
+
+On first initialization PostgreSQL creates separate `computegrid` and `computegrid_test` databases. PostgreSQL and RabbitMQ data are retained in named volumes. Application settings use the `COMPUTEGRID_` environment prefix and are read from the process environment or `.env`.
+
+The simplest full-stack backend start builds the application image, migrates PostgreSQL, and starts the API, relay, RabbitMQ, and Celery worker:
+
+```bash
+make dev-up
+```
+
+Follow backend logs and stop the stack with:
+
+```bash
+make dev-logs
+make dev-down
+```
+
+For direct host-process development, run `make run`, `make relay`, and `make worker` in separate terminals after `make dev-deps-up && make migrate`.
+
+Start the Vite dashboard in another terminal:
+
+```bash
+make web-dev
+```
+
+Open `http://127.0.0.1:5173`, paste the development API token from `.env`, and connect. The token is retained only in browser session storage. The dashboard supports `monte_carlo_pi` submission, manual refresh, optional five-second history polling, and paginated job history. A selected active job refreshes automatically every second, and its execution timeline retains the persisted lifecycle timestamps, durations, attempts, result, and errors after completion. Set `VITE_API_BASE_URL` in `apps/web/.env` when the API is not available at `http://localhost:8000`.
+
+FastAPI allows the local Vite origins configured by `COMPUTEGRID_CORS_ORIGINS`. The value is a JSON array; keep production origins out of this development configuration.
 
 The API is available at `http://127.0.0.1:8000`. Its liveness endpoint can be checked with:
 
@@ -32,16 +68,50 @@ The API is available at `http://127.0.0.1:8000`. Its liveness endpoint can be ch
 curl --fail http://127.0.0.1:8000/healthz
 ```
 
+Submit and inspect an asynchronously executing job using the token configured in `.env`:
+
+```bash
+set -a
+source .env
+set +a
+
+curl --fail-with-body \
+  -X POST http://127.0.0.1:8000/v1/jobs \
+  -H "Authorization: Bearer $COMPUTEGRID_DEVELOPMENT_API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: example-001' \
+  -d '{"type":"monte_carlo_pi","parameters":{"samples":1000000,"seed":42}}'
+
+curl --fail-with-body \
+  -H "Authorization: Bearer $COMPUTEGRID_DEVELOPMENT_API_TOKEN" \
+  'http://127.0.0.1:8000/v1/jobs?limit=20&offset=0'
+```
+
+`POST /v1/jobs` returns `202 Accepted` only after the job and `job.accepted` outbox event commit together. The relay later publishes the event and moves the job to `QUEUED`; a worker records a fenced attempt and moves it through `RUNNING` to `SUCCEEDED` or `FAILED`. An identical retry with the same client-scoped `Idempotency-Key` returns the original job reference; a different validated payload with that key returns `409 Conflict`. `GET /v1/jobs/{job_id}` and the paginated `GET /v1/jobs` expose only jobs owned by the authenticated development client.
+
 Run the complete local quality suite, or individual checks:
 
 ```bash
 make check
 make test
+make test-integration
+make test-e2e
+make test-all
 make lint
 make typecheck
+make web-test
+make web-typecheck
+make web-build
 ```
 
-No environment variables are required for Milestone 1A. Configuration examples will be added when the application gains external dependencies.
+`make check` runs backend linting, strict typing and unit tests followed by frontend type checking, tests, and a production build. `make test` runs database-independent backend unit tests. `make test-integration` requires Compose PostgreSQL and uses only `COMPUTEGRID_TEST_DATABASE_URL`; the database name must end in `_test`. `make test-e2e` additionally requires RabbitMQ at `COMPUTEGRID_TEST_BROKER_URL` and exercises submission, confirmed relay publication, Celery execution, durable results, and duplicate delivery. Migration tests rebuild the dedicated test schema, so never point this variable at a database containing data you need to retain.
+
+### M2A reliability boundary
+
+- The relay locks pending outbox rows with `FOR UPDATE SKIP LOCKED`, publishes with RabbitMQ confirms enabled, and marks an event published only after the publish call succeeds. A crash after broker confirmation but before the database commit can publish a duplicate by design.
+- Celery uses late acknowledgement, rejects on worker loss, and prefetches one job per worker slot. A worker creates a fenced attempt before computation and returns normally only after a terminal state is durable.
+- A delivery for a terminal job is an idempotent no-op. A delivery observed while another attempt is `RUNNING` is requeued rather than acknowledged before durable completion.
+- M2A deliberately has one attempt and no automatic application retry. Lease expiry, abandoned-attempt recovery, retry backoff, crash/failure injection, and autoscaling are M2B/M2C work.
 
 ## Goal
 
@@ -102,6 +172,7 @@ Build a small cloud computing service that can **accept, track, execute, retry, 
 | Component | Choice | Why it is included |
 | --- | --- | --- |
 | Application | Python 3, FastAPI, Pydantic | Typed REST API, validation, autogenerated OpenAPI |
+| Dashboard | React, TypeScript, Vite | Local job submission and inspection interface |
 | Persistence | PostgreSQL, SQLAlchemy, Alembic | Transactional, durable job state and migrations |
 | Job transport | RabbitMQ, Celery | Decoupled workers, acknowledgments, retry behavior |
 | Cache / throttling | Redis | TTL-based read caching; bounded client request limits |
@@ -112,11 +183,11 @@ Build a small cloud computing service that can **accept, track, execute, retry, 
 | Observability | OpenTelemetry, Prometheus | Request/job telemetry exposed to OpsLens |
 | AWS environment | ECR, EKS, RDS (optional) | Cloud deployment through CloudForge |
 
-## API contract (proposed)
+## API contract
 
 ### Submit a job
 
-`POST /v1/jobs` takes an `Idempotency-Key` scoped to the authenticated client. Reusing a key with the same request returns the original job; reusing it with different parameters returns `409 Conflict`.
+`POST /v1/jobs` takes a bearer token and an `Idempotency-Key` scoped to the authenticated client. Reusing a key with the same request returns the original job; reusing it with different parameters returns `409 Conflict`. A new response reports the durably committed initial `ACCEPTED` state; the relay and worker advance it asynchronously afterward.
 
 ```http
 POST /v1/jobs HTTP/1.1
@@ -129,12 +200,12 @@ Idempotency-Key: example-001
 }
 ```
 
-Example `202 Accepted` response (illustrative):
+Example `202 Accepted` response:
 
 ```json
 {
   "job_id": "01EXAMPLE",
-  "state": "QUEUED",
+  "state": "ACCEPTED",
   "status_url": "/v1/jobs/01EXAMPLE"
 }
 ```
@@ -143,12 +214,12 @@ Additional endpoints:
 
 | Endpoint | Planned behavior |
 | --- | --- |
-| `GET /v1/jobs/{job_id}` | Return current state, timestamps, attempts, result/error |
-| `GET /v1/jobs?state=...` | Paginated listing with per-client visibility |
-| `POST /v1/jobs/{job_id}/cancel` | Request cooperative cancellation where supported |
+| `GET /v1/jobs/{job_id}` | Return the client-visible state, timestamps, attempts, result/error |
+| `GET /v1/jobs?limit=...&offset=...` | Paginated listing with per-client visibility |
+| `POST /v1/jobs/{job_id}/cancel` | Planned: request cooperative cancellation where supported |
 | `GET /healthz` | Liveness: application process is responsive |
-| `GET /readyz` | Readiness: can safely serve new requests |
-| `GET /metrics` | Prometheus metrics with bounded label cardinality |
+| `GET /readyz` | Planned: readiness to safely serve new requests |
+| `GET /metrics` | Planned: Prometheus metrics with bounded label cardinality |
 
 Initial authentication can use a development-only API token; later use a production-appropriate identity provider. Tokens and DB credentials will never be embedded in container images or committed configuration.
 
@@ -183,19 +254,18 @@ First implement everything with Docker Compose before using Kubernetes.
 ```text
 compose.yaml
   - api (FastAPI)
+  - migrate (one-shot Alembic migration)
   - relay (outbox publisher)
   - worker (Celery)
   - postgres
   - rabbitmq
-  - redis
 ```
 
-The quality commands documented above are available now. The future multi-service developer interface remains planned and will be added with the corresponding infrastructure:
+Redis remains deferred. The current multi-service developer interface is:
 
 ```bash
-make dev-up       # start local dependencies and services
-make migrate      # apply Alembic migrations
-make load-test    # replay a deterministic workload
+make dev-up       # build and start dependencies and backend services
+make dev-logs     # follow API, relay, worker, and RabbitMQ logs
 make dev-down     # stop services
 ```
 

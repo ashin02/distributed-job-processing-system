@@ -1,2 +1,1 @@
 """ComputeGrid HTTP API."""
-
