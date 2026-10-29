@@ -6,9 +6,9 @@
 >
 > **Context:** Inspired by general engineering challenges in cloud-hosted compute services. This is an independent learning project, not a D-Wave product, implementation, or affiliation.
 
-## Current implementation: Milestone 2A
+## Current implementation: Milestone 2C
 
-The repository contains the FastAPI application, PostgreSQL persistence, authenticated job APIs, a transactional outbox relay, RabbitMQ transport, Celery workers, and a React/TypeScript operations dashboard. New jobs and their outbox events are committed atomically, client-scoped idempotency is enforced by PostgreSQL, and `monte_carlo_pi` jobs execute asynchronously. The relay uses RabbitMQ publisher confirms before marking events published, while workers acknowledge late only after a terminal result or error is committed. Advanced retry policy, abandoned-attempt recovery, autoscaling, caching, monitoring, and Kubernetes deployment remain deferred.
+The repository contains the FastAPI application, PostgreSQL persistence, authenticated job APIs, a transactional outbox relay, RabbitMQ transport, Celery workers, and a React/TypeScript operations dashboard. New jobs and their outbox events are committed atomically, client-scoped idempotency is enforced by PostgreSQL, and `monte_carlo_pi` jobs execute asynchronously. The relay uses RabbitMQ publisher confirms before marking events published, while workers acknowledge late only after a terminal result, durable retry, or permanent failure is committed. Retryable execution failures use persisted retry limits and bounded exponential backoff with jitter. Every running attempt has a durable lease; the relay recovers expired attempts with a new fencing generation so late workers cannot overwrite recovered results. Autoscaling, caching, monitoring, and Kubernetes deployment remain deferred.
 
 ### Local setup
 
@@ -87,7 +87,7 @@ curl --fail-with-body \
   'http://127.0.0.1:8000/v1/jobs?limit=20&offset=0'
 ```
 
-`POST /v1/jobs` returns `202 Accepted` only after the job and `job.accepted` outbox event commit together. The relay later publishes the event and moves the job to `QUEUED`; a worker records a fenced attempt and moves it through `RUNNING` to `SUCCEEDED` or `FAILED`. An identical retry with the same client-scoped `Idempotency-Key` returns the original job reference; a different validated payload with that key returns `409 Conflict`. `GET /v1/jobs/{job_id}` and the paginated `GET /v1/jobs` expose only jobs owned by the authenticated development client.
+`POST /v1/jobs` returns `202 Accepted` only after the job and `job.accepted` outbox event commit together. The relay later publishes the event and moves the job to `QUEUED`; a worker records a fenced attempt and moves it through `RUNNING` to `SUCCEEDED`, `RETRY_WAIT`, or `FAILED`. Due retry events return the job to `QUEUED` for the next numbered attempt. An identical retry with the same client-scoped `Idempotency-Key` returns the original job reference; a different validated payload with that key returns `409 Conflict`. `GET /v1/jobs/{job_id}` and the paginated `GET /v1/jobs` expose only jobs owned by the authenticated development client.
 
 Run the complete local quality suite, or individual checks:
 
@@ -95,6 +95,7 @@ Run the complete local quality suite, or individual checks:
 make check
 make test
 make test-integration
+make test-fault
 make test-e2e
 make test-all
 make lint
@@ -104,14 +105,19 @@ make web-typecheck
 make web-build
 ```
 
-`make check` runs backend linting, strict typing and unit tests followed by frontend type checking, tests, and a production build. `make test` runs database-independent backend unit tests. `make test-integration` requires Compose PostgreSQL and uses only `COMPUTEGRID_TEST_DATABASE_URL`; the database name must end in `_test`. `make test-e2e` additionally requires RabbitMQ at `COMPUTEGRID_TEST_BROKER_URL` and exercises submission, confirmed relay publication, Celery execution, durable results, and duplicate delivery. Migration tests rebuild the dedicated test schema, so never point this variable at a database containing data you need to retain.
+`make check` runs backend linting, strict typing and unit tests followed by frontend type checking, tests, and a production build. `make test` runs database-independent backend unit tests. `make test-integration` and `make test-fault` require Compose PostgreSQL and use only `COMPUTEGRID_TEST_DATABASE_URL`; the database name must end in `_test`. Fault tests pause an active execution, expire its lease, recover it, and verify stale fencing. `make test-e2e` additionally requires RabbitMQ at `COMPUTEGRID_TEST_BROKER_URL` and exercises submission, confirmed relay publication, Celery execution, durable results, and duplicate delivery. Migration tests rebuild the dedicated test schema, so never point this variable at a database containing data you need to retain.
 
-### M2A reliability boundary
+### M2C reliability boundary
 
 - The relay locks pending outbox rows with `FOR UPDATE SKIP LOCKED`, publishes with RabbitMQ confirms enabled, and marks an event published only after the publish call succeeds. A crash after broker confirmation but before the database commit can publish a duplicate by design.
-- Celery uses late acknowledgement, rejects on worker loss, and prefetches one job per worker slot. A worker creates a fenced attempt before computation and returns normally only after a terminal state is durable.
-- A delivery for a terminal job is an idempotent no-op. A delivery observed while another attempt is `RUNNING` is requeued rather than acknowledged before durable completion.
-- M2A deliberately has one attempt and no automatic application retry. Lease expiry, abandoned-attempt recovery, retry backoff, crash/failure injection, and autoscaling are M2B/M2C work.
+- Celery uses late acknowledgement, rejects on worker loss, and prefetches one job per worker slot. A worker creates a fenced attempt before computation and returns normally only after success, terminal failure, or a durable retry event is committed.
+- `RetryableExecutionError` identifies failures eligible for retry; other computation exceptions are permanent. Retry settings control maximum attempts, base/max delay, and proportional jitter. Exhausted failures retain attempt-limit metadata for inspection.
+- Retry timing is durable PostgreSQL state: the failed attempt, `RETRY_WAIT`, and a future `job.retry_scheduled` outbox event commit atomically. The relay cannot publish that event before `next_attempt_at`.
+- Messages carry their expected attempt number. A stale delivery superseded by a later durable generation is an idempotent no-op, while a duplicate for the currently running generation is requeued until completion.
+- Each claim persists a bounded execution lease. The relay scans expired `RUNNING` attempts, locks the authoritative job and attempt, marks the attempt `ABANDONED`, advances the job fencing generation, and applies the same retry/exhaustion policy as other retryable failures.
+- Success and failure commits require the claim's fencing token. A worker that resumes after recovery receives a stale-claim error and cannot replace the recovered job state or result; its redelivered message is later acknowledged as superseded.
+- Compose sends `SIGTERM` and gives Celery a bounded soft-shutdown window. Late acknowledgements and worker-loss rejection preserve in-flight messages when a worker cannot finish gracefully.
+- Kubernetes deployment and autoscaling remain future work.
 
 ## Goal
 

@@ -4,7 +4,7 @@ PYTHON ?= $(VENV)/bin/python
 NPM ?= npm
 WEB_DIR ?= apps/web
 
-.PHONY: install install-web install-all run web-dev db-up db-down db-logs broker-up dev-deps-up dev-up dev-down dev-logs migrate relay worker test test-integration test-e2e test-all lint format typecheck backend-check web-test web-typecheck web-build web-check check
+.PHONY: install install-web install-all run web-dev db-up db-down db-logs broker-up dev-deps-up dev-up dev-down dev-logs migrate relay worker test test-integration test-fault test-e2e test-all lint format typecheck backend-check web-test web-typecheck web-build web-check check
 
 install:
 	$(UV) sync --python 3.12 --extra dev
@@ -59,10 +59,13 @@ test:
 test-integration:
 	$(PYTHON) -m pytest tests/integration
 
+test-fault:
+	$(PYTHON) -m pytest tests/fault
+
 test-e2e:
 	$(PYTHON) -m pytest tests/e2e
 
-test-all: test test-integration test-e2e
+test-all: test test-integration test-fault test-e2e
 
 lint:
 	$(PYTHON) -m ruff check .

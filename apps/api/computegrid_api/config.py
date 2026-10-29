@@ -40,6 +40,35 @@ class BrokerSettings(BaseSettings):
     outbox_poll_interval_seconds: float = Field(default=1.0, gt=0, le=60)
 
 
+class RetrySettings(BaseSettings):
+    """Bounded durable retry policy for worker execution failures."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_prefix="COMPUTEGRID_",
+        extra="ignore",
+    )
+
+    job_max_attempts: int = Field(default=3, ge=1, le=100)
+    retry_base_delay_seconds: float = Field(default=1.0, gt=0, le=3600)
+    retry_max_delay_seconds: float = Field(default=300.0, gt=0, le=86400)
+    retry_jitter_ratio: float = Field(default=0.5, ge=0, le=1)
+
+
+class LeaseSettings(BaseSettings):
+    """Durable worker lease, recovery, and shutdown settings."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_prefix="COMPUTEGRID_",
+        extra="ignore",
+    )
+
+    job_lease_seconds: float = Field(default=300.0, gt=0, le=86400)
+    lease_recovery_batch_size: int = Field(default=50, ge=1, le=1000)
+    worker_soft_shutdown_timeout_seconds: float = Field(default=30.0, ge=0, le=3600)
+
+
 class CorsSettings(BaseSettings):
     """Browser origins allowed during local frontend development."""
 
@@ -71,6 +100,18 @@ def get_settings() -> Settings:
 def get_broker_settings() -> BrokerSettings:
     """Return broker settings shared by the relay and Celery worker."""
     return BrokerSettings()
+
+
+@lru_cache
+def get_retry_settings() -> RetrySettings:
+    """Return the process-wide durable execution retry policy."""
+    return RetrySettings()
+
+
+@lru_cache
+def get_lease_settings() -> LeaseSettings:
+    """Return worker lease and recovery settings."""
+    return LeaseSettings()
 
 
 @lru_cache

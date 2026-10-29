@@ -48,7 +48,7 @@ def build_job_accepted_event(job: Job) -> OutboxEvent:
         id=uuid4(),
         job_id=job.id,
         event_type="job.accepted",
-        payload={"job_id": str(job.id), "job_type": job.job_type},
+        payload={"job_id": str(job.id), "job_type": job.job_type, "attempt_number": 1},
     )
 
 

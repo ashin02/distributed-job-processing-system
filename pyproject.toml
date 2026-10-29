@@ -40,6 +40,7 @@ testpaths = ["tests"]
 markers = [
     "integration: requires the local PostgreSQL test database",
     "e2e: requires the local PostgreSQL test database and RabbitMQ",
+    "fault: injects worker lease expiration against the local PostgreSQL test database",
 ]
 
 [tool.ruff]

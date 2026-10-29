@@ -9,9 +9,10 @@ from typing import Protocol
 
 from sqlalchemy import or_, select
 
-from computegrid_api.config import BrokerSettings, get_broker_settings
+from computegrid_api.config import BrokerSettings, get_broker_settings, get_lease_settings
 from computegrid_api.db.models import Job, JobState, OutboxEvent
 from computegrid_api.db.session import SessionFactory, get_session_factory, transaction
+from computegrid_api.jobs.recovery import recover_expired_leases
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,7 @@ class TaskSender(Protocol):
         self,
         name: str,
         *,
-        args: list[str],
+        args: list[object],
         task_id: str,
         queue: str,
         routing_key: str,
@@ -47,11 +48,18 @@ class CeleryEventPublisher:
         self._queue = queue
 
     def publish(self, event: OutboxEvent) -> None:
-        if event.event_type != "job.accepted":
+        if event.event_type not in {"job.accepted", "job.retry_scheduled"}:
             raise ValueError(f"unsupported outbox event type: {event.event_type}")
+        attempt_number = event.payload.get("attempt_number", 1)
+        if (
+            not isinstance(attempt_number, int)
+            or isinstance(attempt_number, bool)
+            or attempt_number < 1
+        ):
+            raise ValueError(f"outbox event {event.id} has an invalid attempt number")
         self._app.send_task(
             "computegrid.execute_job",
-            args=[str(event.job_id)],
+            args=[str(event.job_id), attempt_number],
             task_id=str(event.id),
             queue=self._queue,
             routing_key=self._queue,
@@ -98,9 +106,15 @@ def relay_once(
             event.published_at = now
             event.next_attempt_at = None
             event.last_error = None
-            if job.state == JobState.ACCEPTED:
+            if(
+                (event.event_type == "job.accepted" and job.state == JobState.ACCEPTED)
+                or (
+                    event.event_type == "job.retry_scheduled"
+                    and job.state == JobState.RETRY_WAIT
+                )
+            ):
                 job.state = JobState.QUEUED
-                job.queued_at = now
+                job.queued_at = job.queued_at or now
             confirmed += 1
     return confirmed
 
@@ -110,16 +124,31 @@ def run(settings: BrokerSettings | None = None) -> None:
     from computegrid_api.celery_app import celery_app
 
     active_settings = settings or get_broker_settings()
+    lease_settings = get_lease_settings()
     publisher = CeleryEventPublisher(celery_app, active_settings.job_queue)
     session_factory = get_session_factory()
     logger.info("outbox relay started", extra={"queue": active_settings.job_queue})
     while True:
+        recovery = recover_expired_leases(
+            session_factory,
+            batch_size=lease_settings.lease_recovery_batch_size,
+        )
+        if recovery.recovered or recovery.stale_attempts:
+            logger.info(
+                "expired worker leases recovered",
+                extra={
+                    "recovered": recovery.recovered,
+                    "retries_scheduled": recovery.retries_scheduled,
+                    "terminal_failures": recovery.terminal_failures,
+                    "stale_attempts": recovery.stale_attempts,
+                },
+            )
         published = relay_once(
             session_factory,
             publisher,
             batch_size=active_settings.outbox_batch_size,
         )
-        if published == 0:
+        if published == 0 and recovery.recovered == 0 and recovery.stale_attempts == 0:
             time.sleep(active_settings.outbox_poll_interval_seconds)
 
 
