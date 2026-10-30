@@ -153,6 +153,82 @@ def test_execution_dispatches_weighted_max_cut_job(
         assert job.result["qubo"]["energy_relation"] == "energy = -cut_weight"
 
 
+@pytest.mark.parametrize(
+    ("key", "payload", "result_key", "expected"),
+    [
+        (
+            "generic-bqm",
+            {
+                "type": "bqm",
+                "parameters": {
+                    "vartype": "BINARY",
+                    "variables": ["x", "y"],
+                    "linear": {"x": -1, "y": -1},
+                    "quadratic": [{"source": "x", "target": "y", "bias": 2}],
+                    "offset": 0,
+                },
+            },
+            "minimum_energy",
+            -1.0,
+        ),
+        (
+            "infeasible-cqm",
+            {
+                "type": "cqm",
+                "parameters": {
+                    "variables": ["x"],
+                    "objective": {"sense": "minimize", "linear": {"x": 1}},
+                    "constraints": [
+                        {
+                            "name": "zero",
+                            "linear": {"x": 1},
+                            "sense": "<=",
+                            "rhs": 0,
+                        },
+                        {
+                            "name": "one",
+                            "linear": {"x": 1},
+                            "sense": ">=",
+                            "rhs": 1,
+                        },
+                    ],
+                },
+            },
+            "status",
+            "INFEASIBLE",
+        ),
+    ],
+)
+def test_execution_dispatches_generic_optimization_jobs(
+    session_factory: SessionFactory,
+    key: str,
+    payload: dict[str, object],
+    result_key: str,
+    expected: object,
+) -> None:
+    created = JobRepository(session_factory).create(
+        client_id="execution-client",
+        idempotency_key=key,
+        request=JobCreateRequest.model_validate(payload),
+    )
+
+    assert (
+        execute_job(
+            created.job.id,
+            worker_id="optimization-worker",
+            session_factory=session_factory,
+        )
+        == ExecutionDisposition.COMPLETED
+    )
+
+    with session_factory() as session:
+        job = session.get(Job, created.job.id)
+        assert job is not None
+        assert job.state == JobState.SUCCEEDED
+        assert job.result is not None
+        assert job.result[result_key] == expected
+
+
 def test_execution_persists_terminal_failure(session_factory: SessionFactory) -> None:
     job_id = create_job(session_factory)
 

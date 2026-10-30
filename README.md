@@ -2,13 +2,24 @@
 
 **A fault-tolerant Python job-processing service: REST API, durable queues, distributed workers, and Kubernetes autoscaling.**
 
-> **Status:** Milestone 2.5 is implemented for local development. Operability, Kubernetes, cloud deployment, and measured performance work remain on the roadmap.
+> **Status:** Milestone 3 is implemented for local development: CI, structured logs, dependency-aware readiness, and read-only diagnostics now complement the M1–M2.6 application. Kubernetes, an optional AWS EKS practice environment, and the public operations demo remain on the roadmap.
 >
 > **Context:** Inspired by general engineering challenges in cloud-hosted compute services. This is an independent learning project, not a D-Wave product, implementation, or affiliation.
 
-## Current implementation: Milestone 2.5
+## Current implementation: Milestone 3
 
-The repository contains the FastAPI application, PostgreSQL persistence, authenticated job APIs, a transactional outbox relay, RabbitMQ transport, Celery workers, and a React/TypeScript operations dashboard. New jobs and their outbox events are committed atomically, client-scoped idempotency is enforced by PostgreSQL, and both deterministic `monte_carlo_pi` and bounded `weighted_max_cut` jobs execute asynchronously. Weighted Max-Cut graphs are converted to QUBO and solved by exact classical enumeration; this is an optimization demonstration, not a quantum computer emulator. The relay uses RabbitMQ publisher confirms before marking events published, while workers acknowledge late only after a terminal result, durable retry, or permanent failure is committed. Retryable execution failures use persisted retry limits and bounded exponential backoff with jitter. Every running attempt has a durable lease; the relay recovers expired attempts with a new fencing generation so late workers cannot overwrite recovered results. Autoscaling, caching, monitoring, and Kubernetes deployment remain deferred.
+The repository contains the FastAPI application, PostgreSQL persistence, authenticated job APIs, a transactional outbox relay, RabbitMQ transport, Celery workers, and a React/TypeScript operations dashboard. New jobs and their outbox events are committed atomically, client-scoped idempotency is enforced by PostgreSQL, and four bounded workloads execute asynchronously: deterministic `monte_carlo_pi`, `weighted_max_cut`, generic `bqm`, and restricted `cqm`. All optimization uses exact classical CPU enumeration. Weighted Max-Cut compiles to a shared BINARY BQM solver; generic BQMs support QUBO and Ising domains; restricted CQMs support binary variables with linear objectives and constraints. This is an educational optimization service, not a quantum computer emulator or D-Wave Hybrid Solver replacement. Existing publisher-confirm, retry, lease recovery, fencing, and duplicate-delivery guarantees apply unchanged to every job type.
+
+M3 adds separate backend and frontend GitHub Actions jobs, JSON application logs,
+an API readiness probe backed by PostgreSQL, a Compose API health check, and a
+read-only `make doctor` command. These operational additions do not change job
+execution, retry, lease, or fencing semantics.
+
+M2.5 was confirmed with 12 passing frontend tests, TypeScript type checking, a
+production Vite build, and a live Max-Cut job whose optimal cut weight and QUBO
+energy were 5 and -5. The M2.6 backend suite, Ruff, and mypy were subsequently
+confirmed locally. The corrected frontend mock-response regression and the new
+M3 changes should be verified with the commands below.
 
 ### Local setup
 
@@ -58,15 +69,37 @@ Start the Vite dashboard in another terminal:
 make web-dev
 ```
 
-Open `http://127.0.0.1:5173`, paste the development API token from `.env`, and connect. The token is retained only in browser session storage. The dashboard supports both job types, manual refresh, optional five-second history polling, and paginated job history. Weighted Max-Cut results include an SVG graph, highlighted optimal partition, QUBO coefficients, and solver metadata. A selected active job refreshes automatically every second, and its execution timeline retains persisted lifecycle timestamps, durations, retries, abandoned attempts, results, and errors after completion. Set `VITE_API_BASE_URL` in `apps/web/.env` when the API is not available at `http://localhost:8000`.
+Open `http://127.0.0.1:5173`, paste the development API token from `.env`, and connect. The token is retained only in browser session storage. Four selectable job cards provide examples and expandable educational explanations. Weighted Max-Cut results include an SVG graph, highlighted partition, and QUBO coefficients; BQM and CQM results show assignments, energy or objective values, feasibility, constraint evaluations, and solver metadata. A selected active job refreshes automatically every second, and its execution timeline retains persisted lifecycle timestamps, durations, retries, abandoned attempts, results, and errors after completion. Set `VITE_API_BASE_URL` in `apps/web/.env` when the API is not available at `http://localhost:8000`.
 
 FastAPI allows the local Vite origins configured by `COMPUTEGRID_CORS_ORIGINS`. The value is a JSON array; keep production origins out of this development configuration.
 
-The API is available at `http://127.0.0.1:8000`. Its liveness endpoint can be checked with:
+The API is available at `http://127.0.0.1:8000`. Liveness checks only that the
+process can answer HTTP; readiness also executes `SELECT 1` through the normal
+PostgreSQL session factory:
 
 ```bash
 curl --fail http://127.0.0.1:8000/healthz
+curl --fail http://127.0.0.1:8000/readyz
 ```
+
+`/readyz` returns `503 Service Unavailable` when PostgreSQL cannot be reached.
+RabbitMQ is intentionally excluded: a temporary broker outage delays queueing
+but does not make the API process dead or prevent PostgreSQL-backed job reads.
+Compose uses the existing PostgreSQL and RabbitMQ health checks and probes the
+API through `/readyz`.
+
+For a concise, read-only view of the local stack, run:
+
+```bash
+make doctor
+```
+
+The doctor reports Compose container state, API liveness/readiness, PostgreSQL
+and RabbitMQ probes, RabbitMQ ready/unacknowledged message counts and consumers,
+Celery ping status, relay process status, and recent error-level application
+logs. It labels results as healthy, unhealthy, unreachable, or unknown and
+never restarts services, changes queues, or writes to the database. Set
+`COMPUTEGRID_API_URL` when diagnosing an API exposed at a non-default address.
 
 Submit and inspect an asynchronously executing job using the token configured in `.env`:
 
@@ -105,6 +138,51 @@ It fixes the first variable to one side to remove complemented duplicates and
 enumerates at most `2^15` assignments. Results include the optimal partition,
 cut weight, QUBO coefficients, and exact-solver metadata.
 
+### Supported optimization model boundary
+
+| Job type | Model | Exact local behavior | Boundary |
+| --- | --- | --- | --- |
+| `weighted_max_cut` | Positive weighted graph | Converts Max-Cut to a BINARY QUBO/BQM and minimizes `-cut_weight` | 2–16 nodes; unique undirected edges |
+| `bqm` | BINARY QUBO or SPIN Ising model | Minimizes offset plus linear and quadratic biases | 1–16 named variables; at most 120 unique interactions |
+| `cqm` | Restricted constrained binary model | Enumerates feasible assignments and minimizes or maximizes a linear objective | 1–16 variables; 1–32 linear `<=`, `>=`, or `==` constraints |
+
+A QUBO is a BQM whose variables take values in `{0, 1}`. An Ising model is a
+BQM whose variables take values in `{-1, +1}`. Weighted Max-Cut is one concrete
+problem that can be translated into a QUBO. A CQM adds explicit constraints;
+ComputeGrid supports only the deliberately narrow binary/linear subset above,
+not the complete D-Wave CQM feature set.
+
+Every model is solved by bounded exhaustive enumeration on ordinary CPU workers.
+There is no quantum SDK, QPU access, embedding, sampling service, or remote
+D-Wave Hybrid Solver integration. If a CQM has no feasible assignment, the job
+still completes successfully with `status: INFEASIBLE`, `feasible: false`, and
+no assignment or objective value. This distinguishes model infeasibility from
+worker or infrastructure failure.
+
+Example generic BQM request parameters:
+
+```json
+{
+  "vartype": "BINARY",
+  "variables": ["x", "y"],
+  "linear": {"x": -1, "y": -1},
+  "quadratic": [{"source": "x", "target": "y", "bias": 2}],
+  "offset": 0
+}
+```
+
+Example restricted CQM request parameters:
+
+```json
+{
+  "variables": ["x", "y"],
+  "objective": {"sense": "maximize", "linear": {"x": 3, "y": 2}},
+  "constraints": [
+    {"name": "choose-one", "linear": {"x": 1, "y": 1}, "sense": "<=", "rhs": 1}
+  ]
+}
+```
+
 `POST /v1/jobs` returns `202 Accepted` only after the job and `job.accepted` outbox event commit together. The relay later publishes the event and moves the job to `QUEUED`; a worker records a fenced attempt and moves it through `RUNNING` to `SUCCEEDED`, `RETRY_WAIT`, or `FAILED`. Due retry events return the job to `QUEUED` for the next numbered attempt. An identical retry with the same client-scoped `Idempotency-Key` returns the original job reference; a different validated payload with that key returns `409 Conflict`. `GET /v1/jobs/{job_id}` and the paginated `GET /v1/jobs` expose only jobs owned by the authenticated development client.
 
 Run the complete local quality suite, or individual checks:
@@ -139,7 +217,7 @@ make web-build
 
 ## Goal
 
-Build a small cloud computing service that can **accept, track, execute, retry, and observe compute jobs** while surviving worker failures. The primary objective is to demonstrate practical Python backend engineering, Linux-based operations, testing, and distributed-systems correctness. An accompanying repository, **CloudForge**, will provision an optional AWS EKS environment; **OpsLens** will supply end-to-end observability.
+Build a small cloud computing service that can **accept, track, execute, retry, and observe compute jobs** while surviving worker failures. The primary objective is to demonstrate practical Python backend engineering, Linux-based operations, testing, and distributed-systems correctness. An accompanying repository, **CloudForge**, may provision an optional AWS EKS environment later.
 
 ### Engineering questions
 
@@ -183,10 +261,8 @@ Build a small cloud computing service that can **accept, track, execute, retry, 
                           |
               PostgreSQL state + results
 
-      Redis: bounded API cache and request throttling
-      KEDA: RabbitMQ queue length -> worker scaling
-      OpsLens: metrics, logs, traces, alerts
-      CloudForge: CI/CD, ECR, EKS, infrastructure
+      GitHub Actions: backend + frontend CI checks
+      Kubernetes / optional EKS: future deployment
 ```
 
 **Workload boundary:** The service executes a fixed allowlist of deterministic compute and bounded classical optimization tasks. It does **not** run arbitrary user-uploaded code, connect to a QPU, or claim to emulate a quantum computer.
@@ -199,12 +275,11 @@ Build a small cloud computing service that can **accept, track, execute, retry, 
 | Dashboard | React, TypeScript, Vite | Local job submission and inspection interface |
 | Persistence | PostgreSQL, SQLAlchemy, Alembic | Transactional, durable job state and migrations |
 | Job transport | RabbitMQ, Celery | Decoupled workers, acknowledgments, retry behavior |
-| Cache / throttling | Redis | TTL-based read caching; bounded client request limits |
 | Quality | pytest, Ruff, mypy, HTTPX | Repeatable tests, linting, typing, API integration checks |
 | Local environment | Docker Compose | One-command multi-service development |
-| Cluster | Kubernetes, Helm, KEDA | Workload isolation, probes, autoscaling |
-| Delivery | GitHub Actions, Argo CD | CI, immutable image promotion, GitOps deployment |
-| Observability | OpenTelemetry, Prometheus | Request/job telemetry exposed to OpsLens |
+| Cluster | Kubernetes (planned) | Workload isolation, probes, and later scaling experiments |
+| Delivery | GitHub Actions | Pull-request and `main` branch quality checks |
+| Operations | JSON application logs and `make doctor` | Lightweight local and container diagnostics |
 | AWS environment | ECR, EKS, RDS (optional) | Cloud deployment through CloudForge |
 
 ## API contract
@@ -236,14 +311,13 @@ Example `202 Accepted` response:
 
 Additional endpoints:
 
-| Endpoint | Planned behavior |
+| Endpoint | Behavior |
 | --- | --- |
 | `GET /v1/jobs/{job_id}` | Return the client-visible state, timestamps, attempts, result/error |
 | `GET /v1/jobs?limit=...&offset=...` | Paginated listing with per-client visibility |
 | `POST /v1/jobs/{job_id}/cancel` | Planned: request cooperative cancellation where supported |
 | `GET /healthz` | Liveness: application process is responsive |
-| `GET /readyz` | Planned: readiness to safely serve new requests |
-| `GET /metrics` | Planned: Prometheus metrics with bounded label cardinality |
+| `GET /readyz` | PostgreSQL-backed readiness; returns `503` when unavailable |
 
 Initial authentication can use a development-only API token; later use a production-appropriate identity provider. Tokens and DB credentials will never be embedded in container images or committed configuration.
 
@@ -267,7 +341,7 @@ PostgreSQL is the source of truth. Each state transition must use validated stat
 
 **Retry discipline.** Distinguish retryable faults (connection loss, transient dependency failures) from permanent validation errors. Apply maximum attempts, exponential backoff with jitter, and a terminal failure state; make exhausted failures inspectable instead of retrying indefinitely.
 
-**Backpressure.** Bound request size, per-client outstanding jobs, task timeouts, and worker concurrency. Use `429 Too Many Requests` when client quotas are exceeded. Redis caching must never become the authoritative source of job state; cache invalidation and TTL must be explicit.
+**Backpressure.** Bound request size, exact-enumeration model size, per-client outstanding jobs, task timeouts, and worker concurrency. Use `429 Too Many Requests` when client quotas are added.
 
 **Graceful shutdown.** Workers stop claiming new tasks, complete or safely relinquish in-flight work, and allow Kubernetes termination grace periods to expire predictably. Test termination under real load.
 
@@ -285,7 +359,7 @@ compose.yaml
   - rabbitmq
 ```
 
-Redis remains deferred. The current multi-service developer interface is:
+The current multi-service developer interface is:
 
 ```bash
 make dev-up       # build and start dependencies and backend services
@@ -295,51 +369,51 @@ make dev-down     # stop services
 
 Keep local service dependencies replaceable via environment configuration and avoid cloud-only behavior in business logic.
 
-## Kubernetes deployment and scaling
+## Kubernetes deployment roadmap
 
-The ComputeGrid Helm chart will own the API, outbox relay, and worker Deployments, Services, probes, and runtime configuration. The **CloudForge** repository will manage the cluster, shared addons, and GitOps deployment entry points. Argo CD, rather than CI using `kubectl apply`, will reconcile production-like application state.
-
-Planned cluster controls:
-
-- Separate worker and API resource requests/limits; non-root containers and read-only root filesystems where feasible.
-- Proper startup/readiness/liveness probes; graceful termination for jobs.
-- KEDA RabbitMQ trigger for queue-length-driven worker scaling, configured from load-test measurements.
-- Kubernetes Secrets sourced from AWS Secrets Manager in the AWS phase; no plaintext secrets in Git.
-- NetworkPolicy restricting traffic to the services that actually need it (subject to the installed CNI's enforcement support).
-- Immutable image digests promoted by GitOps pull requests, with documented rollback procedures.
-
-Example **conceptual** KEDA resource (requires a real RabbitMQ authentication resource and chart wiring):
-
-```yaml
-apiVersion: keda.sh/v1alpha1
-kind: ScaledObject
-metadata:
-  name: computegrid-workers
-spec:
-  scaleTargetRef:
-    name: computegrid-worker
-  minReplicaCount: 1
-  maxReplicaCount: 8
-  triggers:
-    - type: rabbitmq
-      metadata:
-        queueName: computegrid.jobs
-        mode: QueueLength
-        value: "20"
-      authenticationRef:
-        name: computegrid-rabbitmq-auth
-```
+Kubernetes remains a later, deliberately separate milestone after local Compose
+behavior and CI are stable. Initial cluster work will focus on API, relay, and
+worker workloads; resource limits; health probes; configuration and secrets;
+graceful worker termination; and repeatable rollback. Optional AWS deployment
+will target a CloudForge-managed EKS environment. Helm, KEDA, GitOps tooling,
+and autoscaling are not part of the current milestone.
 
 ## Automated testing and CI
 
-GitHub Actions will run on every pull request:
+`.github/workflows/ci.yml` runs for pull requests and pushes to `main` with
+read-only repository permissions. The jobs are intentionally separate:
 
-1. Format/lint/type checks and dependency vulnerability checks.
-2. `pytest` unit tests for API schemas, state transitions, retries, and cache invalidation.
-3. Integration tests against ephemeral PostgreSQL, RabbitMQ, and Redis services.
-4. Contract tests verifying API status codes and idempotent submission.
-5. Container build and image vulnerability scan.
-6. On approved merge: publish an immutable image to the registry; use a separate GitOps PR to request deployment.
+- **Backend:** Python 3.12 and uv install the locked project environment;
+  `make backend-check` runs Ruff, strict mypy, and unit tests once. Dedicated
+  targets then run PostgreSQL integration tests, lease fault-injection tests,
+  and RabbitMQ end-to-end tests. GitHub service containers use an isolated
+  `computegrid_test` database and disposable CI-only credentials.
+- **Frontend:** Node.js 22 runs `npm ci`, TypeScript type checking, Vitest, and
+  the Vite production build from the committed lockfile.
+
+There is no deployment, registry publication, AWS access, or production secret
+in this workflow. GitHub-hosted pull-request CI is the smallest fit because the
+repository already lives on GitHub and needs only short-lived standard service
+containers. Jenkins would add a controller, agents, upgrades, credentials,
+plugins, and availability work without improving this project's current checks.
+It can be reconsidered only if self-hosted or organization-wide pipeline needs
+appear.
+
+To reproduce the CI checks locally:
+
+```bash
+make dev-deps-up
+make backend-check
+make test-integration
+make test-fault
+make test-e2e
+npm --prefix apps/web ci
+make web-typecheck web-test web-build
+```
+
+Repository maintainers may optionally make the `Backend` and `Frontend` checks
+required in the GitHub `main` branch protection rules. No GitHub secrets are
+needed for CI.
 
 **Failure-injection acceptance tests**
 
@@ -351,23 +425,41 @@ GitHub Actions will run on every pull request:
 | Worker dies during execution | Retry/recovery; no incorrect terminal success |
 | Broker briefly disconnects | Backoff and recovery, no silent lost jobs |
 | Database unavailable | API fails safely; readiness reflects inability to serve |
-| Queue grows under load | KEDA adds workers within configured replica limits |
+| Queue grows under load | Backlog remains durable and saturation is measurable |
 | Worker scaled down | In-flight task handled according to termination policy |
 
-## Performance and observability
+## Structured logging and lightweight operations
+
+API, relay, and worker application events are emitted as one JSON object per
+line to stdout for Docker-compatible collection. Every record has an ISO-8601
+UTC timestamp, severity, service, event, and message. Lifecycle events add
+`job_id`, `attempt_number`, and `worker_id` when those values exist. Submission,
+confirmed queueing, worker claim, success, durable retry, lease recovery, and
+terminal failure are covered. Exceptions retain traceback context, while job
+parameters, API tokens, broker URLs, and database credentials are not logged.
+
+At this scale, Docker logs, health/readiness probes, RabbitMQ's built-in queue
+counters, and `make doctor` answer the immediate operational questions. A
+dedicated metrics, tracing, or log-storage platform would add services and
+maintenance before there is a measured retention, alerting, or correlation
+need. M5 will first gather real queue and worker measurements; that evidence can
+justify later observability work if the lightweight tools become insufficient.
+
+## Performance direction
 
 Measure **job submissions/sec, completed jobs/sec, queue wait p50/p95, execution p50/p95, HTTP p95, retry/failure rate, backlog, CPU/memory**, and DB connection utilization. Every benchmark records workload seed, request count, payload size, worker replicas, resource limits, and tool versions. Use fixed workload classes; do not compare unlike task types.
 
-Instrument traces for `API -> DB/outbox -> broker -> worker -> DB commit` with stable correlation IDs propagated in message headers. Export metrics, logs, and traces to OpsLens. Avoid high-cardinality labels containing job IDs. Results should live in `docs/benchmarks/` with exact reproduction commands; no fabricated speedup claims.
+Benchmark results should live in `docs/benchmarks/` with exact reproduction commands; no fabricated speedup claims.
 
 ## Implementation milestones
 
 - [x] **M1 — Python service:** FastAPI, request validation, SQLAlchemy models, Alembic, pytest, Docker Compose.
 - [x] **M2 — Reliable execution:** RabbitMQ/Celery workers, transactional outbox, idempotency, retry, recovery and failure-injection tests.
 - [x] **M2.5 — Optimization and UI:** bounded exact Weighted Max-Cut/QUBO workload and polished operations dashboard.
-- [ ] **M3 — Operability:** Structured logging, OpenTelemetry, metrics, Redis cache/quota, operational runbooks.
-- [ ] **M4 — Kubernetes:** Helm chart, probes, KEDA, local `kind` tests, GitHub Actions and GitOps release.
-- [ ] **M5 — AWS deployment:** Run through CloudForge-managed EKS and supporting services; benchmark and document costs.
+- [x] **M2.6 — Generic models:** exact BINARY/SPIN BQM jobs, restricted binary/linear CQM jobs, and educational model-selection UI.
+- [x] **M3 — CI and lightweight operations:** GitHub Actions, structured logging, readiness checks, and read-only diagnostics.
+- [ ] **M4 — Kubernetes fundamentals:** workload manifests, probes, resource controls, graceful termination, local cluster tests, and optional AWS EKS practice.
+- [ ] **M5 — Public operations demo:** controlled load generation, live queue/worker visualization, crash-recovery demonstration, and basic performance measurements.
 
 **MVP definition of done:** Jobs can be submitted, retrieved, and executed locally; all specified duplicate-submission and worker-restart tests pass; the CI pipeline verifies the result. EKS is *not* required to call the backend MVP complete.
 
@@ -383,8 +475,7 @@ computegrid/
 ├── packages/common/
 ├── migrations/
 ├── tests/{unit,integration,fault,load}/
-├── deploy/helm/computegrid/
-├── dashboards/
+├── deploy/kubernetes/              # future milestone
 ├── docs/{architecture,benchmarks,runbooks}/
 ├── scripts/
 ├── compose.yaml
@@ -398,12 +489,11 @@ Do not accept arbitrary Python/scripts for execution, expose brokers/databases p
 
 ## Skills demonstrated
 
-Python application development, REST API design, SQL/database transactions, caching, Linux containers, Git/GitHub Actions, fault-tolerant distributed systems, Kubernetes/KEDA, and automated tests.
+Python application development, REST API design, mathematical optimization, SQL/database transactions, Linux containers, Git/GitHub Actions, fault-tolerant distributed systems, Kubernetes, and automated tests.
 
 ## Connection to the portfolio
 
-- ****OpsLens**:** Instruments ComputeGrid, detects incidents, and generates diagnostic bundles.
-- ****CloudForge**:** Builds EKS, ECR, networking, IAM, GitOps, and the deployment workflows for both services.
+- ****CloudForge**:** Can provide an optional EKS environment in a later deployment milestone.
 
 ## License
 

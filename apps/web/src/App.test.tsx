@@ -59,7 +59,7 @@ describe("ComputeGrid dashboard", () => {
 
     expect(screen.getByText("Token required")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Submit job" })).toBeDisabled();
-    expect(screen.getByText(/classical optimization/)).toBeInTheDocument();
+    expect(screen.getByText(/classical CPU/)).toBeInTheDocument();
   });
 
   it("submits a Monte Carlo job for asynchronous execution", async () => {
@@ -207,7 +207,7 @@ describe("ComputeGrid dashboard", () => {
     render(<App />);
     const user = await connect();
 
-    await user.click(screen.getByRole("button", { name: /Weighted Max-Cut/ }));
+    await user.click(screen.getByRole("button", { name: /^Weighted Max-Cut/ }));
     await user.click(screen.getByRole("button", { name: "Submit job" }));
 
     await waitFor(() => {
@@ -279,5 +279,106 @@ describe("ComputeGrid dashboard", () => {
     expect(screen.getByText("exact_classical_enumeration")).toBeInTheDocument();
     expect(screen.getByText("ABANDONED")).toBeInTheDocument();
     expect(screen.getByText("lease expired")).toBeInTheDocument();
+  });
+
+  it("offers four selectable jobs with accessible educational panels", async () => {
+    render(<App />);
+    const user = userEvent.setup();
+
+    expect(screen.getByRole("button", { name: /^Monte Carlo π/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Weighted Max-Cut/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^BQM/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^CQM/ })).toBeInTheDocument();
+
+    const infoButton = screen.getByRole("button", { name: "About BQM" });
+    expect(infoButton).toHaveAttribute("aria-expanded", "false");
+    await user.click(infoButton);
+    expect(infoButton).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("What it represents")).toBeInTheDocument();
+    expect(screen.getByText("Example applications")).toBeInTheDocument();
+    expect(screen.getByText("How this demo solves it")).toBeInTheDocument();
+    expect(screen.getByText("Beyond this demo")).toBeInTheDocument();
+    expect(screen.getByText(/Scheduling, feature selection/)).toBeInTheDocument();
+    expect(screen.getByText(/Exact enumeration doubles with each variable/)).toBeInTheDocument();
+    expect(screen.getAllByText(/All jobs run locally on classical CPU workers/)).toHaveLength(1);
+    expect(screen.queryByText("D-Wave relationship")).not.toBeInTheDocument();
+    expect(screen.queryByText("Limitations")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["BQM", "bqm", "Binary Quadratic Model JSON", "BINARY"],
+    ["CQM", "cqm", "Constrained Quadratic Model JSON", undefined],
+  ] as const)("submits the example %s model", async (label, type, editorLabel, vartype) => {
+    render(<App />);
+    const user = await connect();
+
+    await user.click(screen.getByRole("button", { name: new RegExp(`^${label}`) }));
+    expect(screen.getByLabelText(editorLabel)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Submit job" }));
+
+    await waitFor(() => {
+      expect(submitJob).toHaveBeenCalledWith(
+        "test-token",
+        expect.objectContaining({
+          type,
+          parameters: expect.objectContaining(
+            vartype ? { vartype, variables: ["x", "y", "z"] } : { variables: ["x", "y", "z"] },
+          ),
+        }),
+        expect.any(String),
+      );
+    });
+  });
+
+  it("renders minimum-energy BQM assignments", async () => {
+    const bqmJob = { ...job, type: "bqm" as const, state: "SUCCEEDED" as const };
+    vi.mocked(listJobs).mockResolvedValue({ items: [bqmJob], total: 1, limit: 10, offset: 0 });
+    vi.mocked(getJob).mockResolvedValue({
+      ...detail,
+      ...bqmJob,
+      parameters: { vartype: "SPIN", variables: ["s0", "s1"] },
+      result: {
+        assignment: { s0: -1, s1: -1 },
+        minimum_energy: -2,
+        vartype: "SPIN",
+        solver: { name: "exact_classical_enumeration", assignments_evaluated: 4 },
+      },
+    });
+    render(<App />);
+    const user = await connect();
+    await user.click(await screen.findByRole("button", { name: /01JCOMPUTE/ }));
+
+    expect(await screen.findByText("Minimum energy")).toBeInTheDocument();
+    expect(screen.getByText("SPIN variables")).toBeInTheDocument();
+    expect(screen.getByText("s0")).toBeInTheDocument();
+  });
+
+  it("distinguishes an infeasible CQM solution from failed execution", async () => {
+    const cqmJob = { ...job, type: "cqm" as const, state: "SUCCEEDED" as const };
+    vi.mocked(listJobs).mockResolvedValue({ items: [cqmJob], total: 1, limit: 10, offset: 0 });
+    vi.mocked(getJob).mockResolvedValue({
+      ...detail,
+      ...cqmJob,
+      parameters: { variables: ["x"], objective: {}, constraints: [] },
+      result: {
+        status: "INFEASIBLE",
+        assignment: null,
+        objective_value: null,
+        feasible: false,
+        optimal: false,
+        solver: {
+          name: "exact_classical_enumeration",
+          assignments_evaluated: 2,
+          feasible_assignments: 0,
+        },
+      },
+    });
+    render(<App />);
+    const user = await connect();
+    await user.click(await screen.findByRole("button", { name: /01JCOMPUTE/ }));
+
+    expect(await screen.findByText("No feasible assignment exists.")).toBeInTheDocument();
+    expect(screen.getByText(/worker completed successfully/)).toBeInTheDocument();
+    expect(screen.getAllByText("SUCCEEDED").length).toBeGreaterThan(0);
   });
 });

@@ -13,6 +13,7 @@ from computegrid_api.config import BrokerSettings, get_broker_settings, get_leas
 from computegrid_api.db.models import Job, JobState, OutboxEvent
 from computegrid_api.db.session import SessionFactory, get_session_factory, transaction
 from computegrid_api.jobs.recovery import recover_expired_leases
+from computegrid_api.logging_config import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,7 @@ def relay_once(
     """Publish one locked batch and return the confirmed event count."""
     now = datetime.now(UTC)
     confirmed = 0
+    queued_jobs: list[tuple[str, int]] = []
     with transaction(session_factory) as session:
         events = list(
             session.scalars(
@@ -100,13 +102,21 @@ def relay_once(
             except Exception as error:
                 event.last_error = str(error)[:2000]
                 event.next_attempt_at = now + timedelta(seconds=5)
-                logger.warning("outbox publication failed", exc_info=True)
+                logger.warning(
+                    "Outbox publication failed",
+                    extra={
+                        "event": "outbox.publish_failed",
+                        "job_id": str(event.job_id),
+                        "outbox_event_id": str(event.id),
+                    },
+                    exc_info=True,
+                )
                 continue
 
             event.published_at = now
             event.next_attempt_at = None
             event.last_error = None
-            if(
+            if (
                 (event.event_type == "job.accepted" and job.state == JobState.ACCEPTED)
                 or (
                     event.event_type == "job.retry_scheduled"
@@ -115,7 +125,19 @@ def relay_once(
             ):
                 job.state = JobState.QUEUED
                 job.queued_at = job.queued_at or now
+                queued_jobs.append(
+                    (str(job.id), int(event.payload.get("attempt_number", 1)))
+                )
             confirmed += 1
+    for job_id, attempt_number in queued_jobs:
+        logger.info(
+            "Confirmed message publication moved job to queued",
+            extra={
+                "event": "job.queued",
+                "job_id": job_id,
+                "attempt_number": attempt_number,
+            },
+        )
     return confirmed
 
 
@@ -123,26 +145,17 @@ def run(settings: BrokerSettings | None = None) -> None:
     """Poll continuously until the process is terminated."""
     from computegrid_api.celery_app import celery_app
 
+    configure_logging("outbox-relay")
     active_settings = settings or get_broker_settings()
     lease_settings = get_lease_settings()
     publisher = CeleryEventPublisher(celery_app, active_settings.job_queue)
     session_factory = get_session_factory()
-    logger.info("outbox relay started", extra={"queue": active_settings.job_queue})
+    logger.info("Outbox relay started", extra={"event": "relay.started"})
     while True:
         recovery = recover_expired_leases(
             session_factory,
             batch_size=lease_settings.lease_recovery_batch_size,
         )
-        if recovery.recovered or recovery.stale_attempts:
-            logger.info(
-                "expired worker leases recovered",
-                extra={
-                    "recovered": recovery.recovered,
-                    "retries_scheduled": recovery.retries_scheduled,
-                    "terminal_failures": recovery.terminal_failures,
-                    "stale_attempts": recovery.stale_attempts,
-                },
-            )
         published = relay_once(
             session_factory,
             publisher,
@@ -153,5 +166,4 @@ def run(settings: BrokerSettings | None = None) -> None:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
     run()

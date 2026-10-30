@@ -1,5 +1,6 @@
 """Transactional persistence operations for jobs."""
 
+import logging
 from dataclasses import dataclass
 from hashlib import sha256
 from json import dumps
@@ -12,6 +13,8 @@ from sqlalchemy.orm import selectinload
 from computegrid_api.api.schemas import JobCreateRequest
 from computegrid_api.db.models import Job, OutboxEvent
 from computegrid_api.db.session import SessionFactory, get_session_factory, transaction
+
+logger = logging.getLogger(__name__)
 
 
 class IdempotencyConflictError(Exception):
@@ -87,6 +90,10 @@ class JobRepository:
                 raise
             return self._resolve_existing(concurrent_job, payload_hash)
 
+        logger.info(
+            "Job and acceptance event committed",
+            extra={"event": "job.submitted", "job_id": str(job.id)},
+        )
         return CreatedJob(job=job, created=True)
 
     def get(self, *, client_id: str, job_id: UUID) -> Job | None:

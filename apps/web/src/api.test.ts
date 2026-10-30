@@ -65,6 +65,36 @@ describe("API client", () => {
     });
   });
 
+  it("submits generic BQM and CQM models without transformation", async () => {
+    const fetchMock = vi.fn().mockImplementation(async () =>
+      new Response(
+        JSON.stringify({ job_id: "job-3", state: "ACCEPTED", status_url: "/v1/jobs/job-3" }),
+        { status: 202, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const bqm = {
+      vartype: "SPIN" as const,
+      variables: ["s0", "s1"],
+      linear: { s0: 1 },
+      quadratic: [{ source: "s0", target: "s1", bias: -2 }],
+      offset: 0,
+    };
+    const cqm = {
+      variables: ["x"],
+      objective: { sense: "maximize" as const, linear: { x: 1 } },
+      constraints: [{ name: "bound", linear: { x: 1 }, sense: "<=" as const, rhs: 1 }],
+    };
+
+    await submitJob("secret", { type: "bqm", parameters: bqm }, "request-3");
+    await submitJob("secret", { type: "cqm", parameters: cqm }, "request-4");
+
+    const first = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const second = fetchMock.mock.calls[1]?.[1] as RequestInit;
+    expect(JSON.parse(String(first.body))).toEqual({ type: "bqm", parameters: bqm });
+    expect(JSON.parse(String(second.body))).toEqual({ type: "cqm", parameters: cqm });
+  });
+
   it("passes pagination and surfaces API error details", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ detail: "Invalid or missing API token" }), {

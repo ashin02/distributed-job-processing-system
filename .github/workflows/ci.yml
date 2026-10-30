@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: computegrid_test
+          POSTGRES_USER: computegrid_ci
+          POSTGRES_PASSWORD: computegrid_ci_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U computegrid_ci -d computegrid_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      rabbitmq:
+        image: rabbitmq:4.1-management-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: computegrid_ci
+          RABBITMQ_DEFAULT_PASS: computegrid_ci_password
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      COMPUTEGRID_DATABASE_URL: postgresql+psycopg://computegrid_ci:computegrid_ci_password@localhost:5432/computegrid_test
+      COMPUTEGRID_TEST_DATABASE_URL: postgresql+psycopg://computegrid_ci:computegrid_ci_password@localhost:5432/computegrid_test
+      COMPUTEGRID_BROKER_URL: amqp://computegrid_ci:computegrid_ci_password@localhost:5672//
+      COMPUTEGRID_TEST_BROKER_URL: amqp://computegrid_ci:computegrid_ci_password@localhost:5672//
+      COMPUTEGRID_JOB_QUEUE: computegrid.jobs
+      COMPUTEGRID_DEVELOPMENT_API_TOKEN: ci-development-token
+      COMPUTEGRID_DEVELOPMENT_CLIENT_ID: ci-client
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: python -m pip install --disable-pip-version-check uv
+      - name: Install backend dependencies
+        run: make install
+      - name: Lint, type-check, and run unit tests
+        run: make backend-check
+      - name: Run PostgreSQL integration tests
+        run: make test-integration
+      - name: Run lease fault-injection tests
+        run: make test-fault
+      - name: Run RabbitMQ end-to-end tests
+        run: make test-e2e
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Type-check
+        run: npm run typecheck
+      - name: Run Vitest
+        run: npm run test
+      - name: Build production assets
+        run: npm run build

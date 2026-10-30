@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from random import random
@@ -17,6 +18,8 @@ from computegrid_api.jobs.execution import (
     apply_attempt_failure,
     configured_retry_policy,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +51,7 @@ def recover_expired_leases(
     retries_scheduled = 0
     terminal_failures = 0
     stale_attempts = 0
+    recovery_events: list[dict[str, object]] = []
 
     with transaction(session_factory) as session:
         candidates = list(
@@ -90,6 +94,15 @@ def recover_expired_leases(
                     "message": "attempt no longer owns the job fencing token",
                 }
                 stale_attempts += 1
+                recovery_events.append(
+                    {
+                        "event": "job.stale_attempt_abandoned",
+                        "job_id": str(job.id),
+                        "attempt_number": attempt.attempt_number,
+                        "worker_id": attempt.worker_id,
+                        "disposition": ExecutionDisposition.SUPERSEDED.value,
+                    }
+                )
                 continue
 
             job.version += 1
@@ -116,6 +129,22 @@ def recover_expired_leases(
                 retries_scheduled += 1
             else:
                 terminal_failures += 1
+            recovery_events.append(
+                {
+                    "event": (
+                        "job.lease_recovered.retry_scheduled"
+                        if disposition == ExecutionDisposition.RETRY_SCHEDULED
+                        else "job.lease_recovered.failed"
+                    ),
+                    "job_id": str(job.id),
+                    "attempt_number": attempt.attempt_number,
+                    "worker_id": attempt.worker_id,
+                    "disposition": disposition.value,
+                }
+            )
+
+    for context in recovery_events:
+        logger.warning("Expired worker lease recovered", extra=context)
 
     return RecoverySummary(
         recovered=recovered,

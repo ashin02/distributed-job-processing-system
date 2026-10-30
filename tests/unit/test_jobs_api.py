@@ -146,6 +146,65 @@ def test_authentication_returns_configured_client(settings: Settings) -> None:
             },
         },
         {"type": "weighted_max_cut", "parameters": {"samples": 1000, "seed": 42}},
+        {
+            "type": "bqm",
+            "parameters": {
+                "vartype": "BINARY",
+                "variables": [f"x{index}" for index in range(17)],
+                "linear": {},
+                "quadratic": [],
+            },
+        },
+        {
+            "type": "bqm",
+            "parameters": {
+                "vartype": "BINARY",
+                "variables": ["x", "y"],
+                "linear": {"unknown": 1},
+                "quadratic": [],
+            },
+        },
+        {
+            "type": "bqm",
+            "parameters": {
+                "vartype": "SPIN",
+                "variables": ["x", "y"],
+                "linear": {},
+                "quadratic": [
+                    {"source": "x", "target": "y", "bias": 1},
+                    {"source": "y", "target": "x", "bias": 2},
+                ],
+            },
+        },
+        {
+            "type": "cqm",
+            "parameters": {
+                "variables": ["x"],
+                "objective": {"sense": "maximize", "linear": {"missing": 1}},
+                "constraints": [
+                    {"name": "limit", "linear": {"x": 1}, "sense": "<=", "rhs": 1}
+                ],
+            },
+        },
+        {
+            "type": "cqm",
+            "parameters": {
+                "variables": ["x"],
+                "objective": {"sense": "minimize", "linear": {"x": 1}},
+                "constraints": [],
+            },
+        },
+        {
+            "type": "cqm",
+            "parameters": {
+                "variables": [f"x{index}" for index in range(17)],
+                "objective": {"sense": "minimize", "linear": {}},
+                "constraints": [
+                    {"name": "limit", "linear": {"x0": 1}, "sense": "<=", "rhs": 1}
+                ],
+            },
+        },
+        {"type": "bqm", "parameters": {"samples": 1000, "seed": 42}},
     ],
 )
 def test_create_job_validates_payload(payload: dict[str, object]) -> None:
@@ -169,6 +228,42 @@ def test_create_job_accepts_bounded_weighted_graph() -> None:
 
     assert request.type.value == "weighted_max_cut"
     assert request.parameters.model_dump(mode="json")["nodes"] == ["a", "b", "c"]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "type": "bqm",
+            "parameters": {
+                "vartype": "BINARY",
+                "variables": ["x", "y"],
+                "linear": {"x": -1},
+                "quadratic": [{"source": "x", "target": "y", "bias": 2}],
+                "offset": 0,
+            },
+        },
+        {
+            "type": "cqm",
+            "parameters": {
+                "variables": ["x", "y"],
+                "objective": {"sense": "maximize", "linear": {"x": 2, "y": 1}},
+                "constraints": [
+                    {
+                        "name": "choose-one",
+                        "linear": {"x": 1, "y": 1},
+                        "sense": "<=",
+                        "rhs": 1,
+                    }
+                ],
+            },
+        },
+    ],
+)
+def test_create_job_accepts_generic_optimization_models(payload: dict[str, object]) -> None:
+    request = JobCreateRequest.model_validate(payload)
+
+    assert request.type.value in {"bqm", "cqm"}
 
 
 def test_openapi_requires_idempotency_key() -> None:

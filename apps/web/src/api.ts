@@ -25,11 +25,44 @@ export interface WeightedMaxCutParameters {
   edges: WeightedEdge[];
 }
 
-export type JobType = "monte_carlo_pi" | "weighted_max_cut";
+export interface QuadraticBias {
+  source: string;
+  target: string;
+  bias: number;
+}
+
+export interface BQMParameters {
+  vartype: "BINARY" | "SPIN";
+  variables: string[];
+  linear: Record<string, number>;
+  quadratic: QuadraticBias[];
+  offset: number;
+}
+
+export interface CQMConstraint {
+  name: string;
+  linear: Record<string, number>;
+  sense: "<=" | ">=" | "==";
+  rhs: number;
+}
+
+export interface CQMParameters {
+  variables: string[];
+  objective: {
+    sense: "minimize" | "maximize";
+    linear: Record<string, number>;
+    offset?: number;
+  };
+  constraints: CQMConstraint[];
+}
+
+export type JobType = "monte_carlo_pi" | "weighted_max_cut" | "bqm" | "cqm";
 
 export type JobCreateRequest =
   | { type: "monte_carlo_pi"; parameters: MonteCarloPiParameters }
-  | { type: "weighted_max_cut"; parameters: WeightedMaxCutParameters };
+  | { type: "weighted_max_cut"; parameters: WeightedMaxCutParameters }
+  | { type: "bqm"; parameters: BQMParameters }
+  | { type: "cqm"; parameters: CQMParameters };
 
 export interface JobAccepted {
   job_id: string;

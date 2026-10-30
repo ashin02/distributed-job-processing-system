@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -16,7 +17,9 @@ from sqlalchemy.orm import Session
 from computegrid_api.config import get_lease_settings, get_retry_settings
 from computegrid_api.db.models import AttemptState, Job, JobAttempt, JobState, OutboxEvent
 from computegrid_api.db.session import SessionFactory, get_session_factory, transaction
-from computegrid_api.jobs.optimization import weighted_max_cut
+from computegrid_api.jobs.optimization import solve_bqm, solve_cqm, weighted_max_cut
+
+logger = logging.getLogger(__name__)
 
 type JobResult = dict[str, Any]
 type Computation = Callable[[dict[str, Any]], JobResult]
@@ -122,6 +125,8 @@ def computation_for(job_type: str) -> Computation:
     computations: dict[str, Computation] = {
         "monte_carlo_pi": monte_carlo_pi,
         "weighted_max_cut": weighted_max_cut,
+        "bqm": solve_bqm,
+        "cqm": solve_cqm,
     }
     try:
         return computations[job_type]
@@ -158,11 +163,18 @@ def execute_job(
     if isinstance(claim, ExecutionDisposition):
         return claim
 
+    log_context = {
+        "job_id": str(job_id),
+        "attempt_number": claim.attempt_number,
+        "worker_id": worker_id,
+    }
+    logger.info("Worker claim committed", extra={"event": "job.claimed", **log_context})
+
     try:
         active_computation = computation or computation_for(claim.job_type)
         result = active_computation(claim.parameters)
     except Exception as error:
-        return _finish_failure(
+        disposition = _finish_failure(
             job_id,
             claim,
             error=error,
@@ -170,8 +182,25 @@ def execute_job(
             random_source=random_source,
             session_factory=factory,
         )
+        event = (
+            "job.retry_scheduled"
+            if disposition == ExecutionDisposition.RETRY_SCHEDULED
+            else "job.failed"
+        )
+        logger.log(
+            (
+                logging.WARNING
+                if disposition == ExecutionDisposition.RETRY_SCHEDULED
+                else logging.ERROR
+            ),
+            "Job execution failed after durable state update",
+            extra={"event": event, "disposition": disposition.value, **log_context},
+            exc_info=True,
+        )
+        return disposition
 
     _finish_succeeded(job_id, claim, result=result, session_factory=factory)
+    logger.info("Job result committed", extra={"event": "job.succeeded", **log_context})
     return ExecutionDisposition.COMPLETED
 
 

@@ -10,6 +10,9 @@ from celery.exceptions import Reject
 
 from computegrid_api.config import get_broker_settings, get_lease_settings
 from computegrid_api.jobs.execution import ExecutionDisposition, execute_job
+from computegrid_api.logging_config import configure_logging
+
+configure_logging("worker")
 
 broker_settings = get_broker_settings()
 lease_settings = get_lease_settings()
@@ -31,6 +34,7 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     worker_cancel_long_running_tasks_on_connection_loss=True,
     worker_enable_soft_shutdown_on_idle=True,
+    worker_hijack_root_logger=False,
     worker_soft_shutdown_timeout=lease_settings.worker_soft_shutdown_timeout_seconds,
 )
 

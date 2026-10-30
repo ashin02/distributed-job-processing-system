@@ -4,7 +4,103 @@ from itertools import product
 from typing import Any
 
 import pytest
-from computegrid_api.jobs.optimization import weighted_max_cut
+from computegrid_api.jobs.optimization import solve_bqm, solve_cqm, weighted_max_cut
+
+
+def test_binary_bqm_returns_minimum_energy_assignment() -> None:
+    result = solve_bqm(
+        {
+            "vartype": "BINARY",
+            "variables": ["x", "y"],
+            "linear": {"x": -1, "y": -1},
+            "quadratic": [{"source": "x", "target": "y", "bias": 2}],
+            "offset": 0.5,
+        }
+    )
+
+    assert result["assignment"] == {"x": 1, "y": 0}
+    assert result["minimum_energy"] == -0.5
+    assert result["vartype"] == "BINARY"
+    assert result["solver"]["assignments_evaluated"] == 4
+
+
+def test_spin_bqm_uses_minus_one_plus_one_domain() -> None:
+    result = solve_bqm(
+        {
+            "vartype": "SPIN",
+            "variables": ["s0", "s1"],
+            "linear": {},
+            "quadratic": [{"source": "s0", "target": "s1", "bias": -2}],
+            "offset": 1,
+        }
+    )
+
+    assert result["assignment"] == {"s0": -1, "s1": -1}
+    assert result["minimum_energy"] == -1
+    assert set(result["assignment"].values()) == {-1}
+    assert result["vartype"] == "SPIN"
+
+
+@pytest.mark.parametrize(
+    ("sense", "expected_assignment", "expected_objective"),
+    [
+        ("maximize", {"x": 1, "y": 0}, 3.0),
+        ("minimize", {"x": 0, "y": 0}, 0.0),
+    ],
+)
+def test_cqm_optimizes_feasible_binary_assignments(
+    sense: str,
+    expected_assignment: dict[str, int],
+    expected_objective: float,
+) -> None:
+    result = solve_cqm(
+        {
+            "variables": ["x", "y"],
+            "objective": {"sense": sense, "linear": {"x": 3, "y": 2}, "offset": 0},
+            "constraints": [
+                {"name": "capacity", "linear": {"x": 1, "y": 1}, "sense": "<=", "rhs": 1},
+                {"name": "nonnegative", "linear": {"x": 1}, "sense": ">=", "rhs": 0},
+            ],
+        }
+    )
+
+    assert result["status"] == "OPTIMAL"
+    assert result["assignment"] == expected_assignment
+    assert result["objective_value"] == expected_objective
+    assert result["feasible"] is True
+    assert result["optimal"] is True
+    assert all(item["satisfied"] for item in result["constraint_evaluations"])
+
+
+def test_cqm_equality_constraint_and_infeasible_result() -> None:
+    equality = solve_cqm(
+        {
+            "variables": ["x", "y"],
+            "objective": {"sense": "minimize", "linear": {"x": 2, "y": 1}},
+            "constraints": [
+                {"name": "choose-one", "linear": {"x": 1, "y": 1}, "sense": "==", "rhs": 1}
+            ],
+        }
+    )
+    infeasible = solve_cqm(
+        {
+            "variables": ["x"],
+            "objective": {"sense": "minimize", "linear": {"x": 1}},
+            "constraints": [
+                {"name": "must-be-zero", "linear": {"x": 1}, "sense": "<=", "rhs": 0},
+                {"name": "must-be-one", "linear": {"x": 1}, "sense": ">=", "rhs": 1},
+            ],
+        }
+    )
+
+    assert equality["assignment"] == {"x": 0, "y": 1}
+    assert equality["objective_value"] == 1
+    assert infeasible["status"] == "INFEASIBLE"
+    assert infeasible["assignment"] is None
+    assert infeasible["objective_value"] is None
+    assert infeasible["feasible"] is False
+    assert infeasible["optimal"] is False
+    assert infeasible["solver"]["enumeration_complete"] is True
 
 
 @pytest.mark.parametrize(
