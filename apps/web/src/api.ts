@@ -128,12 +128,13 @@ const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:800
   "",
 );
 
-async function request<T>(path: string, token: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, token: string | null, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
+    credentials: "include",
     headers: {
       Accept: "application/json",
-      Authorization: `Bearer ${token}`,
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...init?.headers,
     },
   });
@@ -161,7 +162,7 @@ async function request<T>(path: string, token: string, init?: RequestInit): Prom
 }
 
 export function submitJob(
-  token: string,
+  token: string | null,
   job: JobCreateRequest,
   idempotencyKey: string,
 ): Promise<JobAccepted> {
@@ -175,11 +176,11 @@ export function submitJob(
   });
 }
 
-export function listJobs(token: string, limit: number, offset: number): Promise<JobListPage> {
+export function listJobs(token: string | null, limit: number, offset: number): Promise<JobListPage> {
   const query = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   return request<JobListPage>(`/v1/jobs?${query}`, token);
 }
 
-export function getJob(token: string, jobId: string): Promise<JobDetail> {
+export function getJob(token: string | null, jobId: string): Promise<JobDetail> {
   return request<JobDetail>(`/v1/jobs/${encodeURIComponent(jobId)}`, token);
 }

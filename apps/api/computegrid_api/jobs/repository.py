@@ -6,12 +6,12 @@ from hashlib import sha256
 from json import dumps
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from computegrid_api.api.schemas import JobCreateRequest
-from computegrid_api.db.models import Job, OutboxEvent
+from computegrid_api.db.models import Job, JobState, OutboxEvent
 from computegrid_api.db.session import SessionFactory, get_session_factory, transaction
 
 logger = logging.getLogger(__name__)
@@ -19,6 +19,20 @@ logger = logging.getLogger(__name__)
 
 class IdempotencyConflictError(Exception):
     """The same client key was used for a different request payload."""
+
+
+class DemoCapacityExceededError(Exception):
+    """Anonymous demo capacity is currently exhausted."""
+
+
+@dataclass(frozen=True, slots=True)
+class JobCreationLimits:
+    """Admission limits applied atomically to anonymous job creation."""
+
+    max_active_per_client: int
+    max_active_global: int
+    max_retained_per_client: int
+    max_retained_global: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,7 +76,12 @@ class JobRepository:
         self._session_factory = session_factory
 
     def create(
-        self, *, client_id: str, idempotency_key: str, request: JobCreateRequest
+        self,
+        *,
+        client_id: str,
+        idempotency_key: str,
+        request: JobCreateRequest,
+        limits: JobCreationLimits | None = None,
     ) -> CreatedJob:
         """Create a job and outbox event, or return an identical prior request."""
         payload_hash = request_hash(request)
@@ -82,6 +101,44 @@ class JobRepository:
 
         try:
             with transaction(self._session_factory) as session:
+                if limits is not None:
+                    # Serialize anonymous admission across API processes without
+                    # holding a lock during job execution.
+                    session.execute(text("SELECT pg_advisory_xact_lock(1129270607)"))
+                    existing_after_lock = session.scalar(
+                        select(Job).where(
+                            Job.client_id == client_id,
+                            Job.idempotency_key == idempotency_key,
+                        )
+                    )
+                    if existing_after_lock is not None:
+                        return self._resolve_existing(existing_after_lock, payload_hash)
+                    active_states = (
+                        JobState.ACCEPTED,
+                        JobState.QUEUED,
+                        JobState.RUNNING,
+                        JobState.RETRY_WAIT,
+                    )
+                    global_active = session.scalar(
+                        select(func.count()).select_from(Job).where(Job.state.in_(active_states))
+                    )
+                    client_active = session.scalar(
+                        select(func.count())
+                        .select_from(Job)
+                        .where(Job.client_id == client_id, Job.state.in_(active_states))
+                    )
+                    global_retained = session.scalar(select(func.count()).select_from(Job))
+                    client_retained = session.scalar(
+                        select(func.count()).select_from(Job).where(Job.client_id == client_id)
+                    )
+                    if (global_active or 0) >= limits.max_active_global or (
+                        client_active or 0
+                    ) >= limits.max_active_per_client:
+                        raise DemoCapacityExceededError
+                    if (global_retained or 0) >= limits.max_retained_global or (
+                        client_retained or 0
+                    ) >= limits.max_retained_per_client:
+                        raise DemoCapacityExceededError
                 session.add_all([job, event])
                 session.flush()
         except IntegrityError:

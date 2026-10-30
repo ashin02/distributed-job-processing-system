@@ -20,7 +20,12 @@ def create_session_factory(engine: Engine) -> SessionFactory:
 @lru_cache
 def get_engine() -> Engine:
     """Create and cache the application database engine."""
-    return create_engine(get_database_settings().database_url, pool_pre_ping=True)
+    settings = get_database_settings()
+    return create_engine(
+        settings.database_url,
+        pool_pre_ping=True,
+        connect_args={"connect_timeout": settings.database_connect_timeout_seconds},
+    )
 
 
 @lru_cache

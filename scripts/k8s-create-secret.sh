@@ -38,12 +38,14 @@ if [[ ! -f "$secret_file" ]]; then
   postgres_password="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
   rabbitmq_password="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
   development_token="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+  demo_session_secret="$(od -An -N48 -tx1 /dev/urandom | tr -d ' \n')"
   {
     printf 'POSTGRES_USER=computegrid\n'
     printf 'POSTGRES_PASSWORD=%s\n' "$postgres_password"
     printf 'RABBITMQ_USER=computegrid\n'
     printf 'RABBITMQ_PASSWORD=%s\n' "$rabbitmq_password"
     printf 'COMPUTEGRID_DEVELOPMENT_API_TOKEN=%s\n' "$development_token"
+    printf 'COMPUTEGRID_DEMO_SESSION_SECRET=%s\n' "$demo_session_secret"
   } > "$secret_file"
   printf "Created ignored local credential file '%s'.\n" "$secret_file"
 else
@@ -56,6 +58,7 @@ postgres_password=""
 rabbitmq_user=""
 rabbitmq_password=""
 development_token=""
+demo_session_secret=""
 while IFS='=' read -r key value; do
   case "$key" in
     POSTGRES_USER) postgres_user="$value" ;;
@@ -63,11 +66,19 @@ while IFS='=' read -r key value; do
     RABBITMQ_USER) rabbitmq_user="$value" ;;
     RABBITMQ_PASSWORD) rabbitmq_password="$value" ;;
     COMPUTEGRID_DEVELOPMENT_API_TOKEN) development_token="$value" ;;
+    COMPUTEGRID_DEMO_SESSION_SECRET) demo_session_secret="$value" ;;
   esac
 done < "$secret_file"
 
+if [[ -z "$demo_session_secret" ]]; then
+  demo_session_secret="$(od -An -N48 -tx1 /dev/urandom | tr -d ' \n')"
+  umask 077
+  printf 'COMPUTEGRID_DEMO_SESSION_SECRET=%s\n' "$demo_session_secret" >> "$secret_file"
+  printf "Added an anonymous-demo signing secret to '%s'.\n" "$secret_file"
+fi
+
 for value_name in \
-  postgres_user postgres_password rabbitmq_user rabbitmq_password development_token; do
+  postgres_user postgres_password rabbitmq_user rabbitmq_password development_token demo_session_secret; do
   value="${!value_name}"
   if [[ -z "$value" || "$value" == *[!A-Za-z0-9]* ]]; then
     printf 'error: %s must be non-empty and contain only ASCII letters and digits\n' \
@@ -110,6 +121,7 @@ printf %s "$postgres_password" > "$secret_tmp/POSTGRES_PASSWORD"
 printf %s "$rabbitmq_user" > "$secret_tmp/RABBITMQ_USER"
 printf %s "$rabbitmq_password" > "$secret_tmp/RABBITMQ_PASSWORD"
 printf %s "$development_token" > "$secret_tmp/COMPUTEGRID_DEVELOPMENT_API_TOKEN"
+printf %s "$demo_session_secret" > "$secret_tmp/COMPUTEGRID_DEMO_SESSION_SECRET"
 
 kubectl --context "$k8s_context" --namespace "$k8s_namespace" create secret generic \
   computegrid-secrets \
@@ -118,6 +130,7 @@ kubectl --context "$k8s_context" --namespace "$k8s_namespace" create secret gene
   --from-file="RABBITMQ_USER=$secret_tmp/RABBITMQ_USER" \
   --from-file="RABBITMQ_PASSWORD=$secret_tmp/RABBITMQ_PASSWORD" \
   --from-file="COMPUTEGRID_DEVELOPMENT_API_TOKEN=$secret_tmp/COMPUTEGRID_DEVELOPMENT_API_TOKEN" \
+  --from-file="COMPUTEGRID_DEMO_SESSION_SECRET=$secret_tmp/COMPUTEGRID_DEMO_SESSION_SECRET" \
   --dry-run=client -o yaml \
   | kubectl --context "$k8s_context" --namespace "$k8s_namespace" apply -f -
 

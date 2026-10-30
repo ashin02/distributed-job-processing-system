@@ -29,9 +29,13 @@ def make_job(*, idempotency_key: str = "request-1", state: JobState = JobState.A
 def test_migration_creates_expected_schema(migrated_engine: Engine) -> None:
     inspector = inspect(migrated_engine)
 
-    assert {"alembic_version", "jobs", "job_attempts", "outbox_events"} <= set(
-        inspector.get_table_names()
-    )
+    assert {
+        "alembic_version",
+        "jobs",
+        "job_attempts",
+        "outbox_events",
+        "demo_rate_limits",
+    } <= set(inspector.get_table_names())
     assert "uq_jobs_client_idempotency_key" in {
         constraint["name"] for constraint in inspector.get_unique_constraints("jobs")
     }
@@ -41,9 +45,14 @@ def test_migration_creates_expected_schema(migrated_engine: Engine) -> None:
     assert "ix_outbox_events_pending" in {
         index["name"] for index in inspector.get_indexes("outbox_events")
     }
+    assert "ix_demo_rate_limits_window_started_at" in {
+        index["name"] for index in inspector.get_indexes("demo_rate_limits")
+    }
 
     with migrated_engine.connect() as connection:
-        assert MigrationContext.configure(connection).get_current_revision() == "0001"
+        assert (
+            MigrationContext.configure(connection).get_current_revision() == "0002_anonymous_demo"
+        )
 
 
 def test_transaction_commits_job_and_outbox_atomically(session_factory: SessionFactory) -> None:

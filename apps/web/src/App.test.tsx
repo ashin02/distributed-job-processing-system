@@ -54,6 +54,16 @@ async function connect() {
 }
 
 describe("ComputeGrid dashboard", () => {
+  it("starts an isolated browser demo without a token when demo mode is enabled", async () => {
+    render(<App demoMode />);
+
+    expect(screen.getByText("Anonymous demo")).toBeInTheDocument();
+    expect(screen.getByText("Private browser session")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Development API token")).not.toBeInTheDocument();
+    await waitFor(() => expect(listJobs).toHaveBeenCalledWith(null, 10, 0));
+    expect(screen.getByRole("button", { name: "Submit job" })).toBeEnabled();
+  });
+
   it("requires a development token before submission", () => {
     render(<App />);
 

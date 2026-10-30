@@ -3,9 +3,9 @@
 
 **A fault-tolerant distributed job-processing platform built with Python, FastAPI, PostgreSQL, RabbitMQ, Celery, and React.**
 
-> **Status (October 2026):** M1–M4D are complete. ComputeGrid has been deployed and verified on a local single-node Kubernetes cluster using kind. Verified capabilities include distributed execution, durable retries, worker crash recovery, horizontal worker scaling, Kubernetes self-healing, rolling restarts, and in-flight worker failure recovery. Backend and frontend CI pass on GitHub Actions.
+> **Status (October 2026):** M1–M4D and M5A-1 are complete and verified. M5A-2 anonymous demo access is implemented and awaiting local verification. ComputeGrid has been deployed with Docker Compose and on a local single-node Kubernetes cluster using kind. Verified capabilities include distributed execution, durable retries, worker crash recovery, horizontal worker scaling, Kubernetes self-healing, rolling restarts, in-flight worker failure recovery, and an authenticated backend observability API backed by live RabbitMQ, Celery, and PostgreSQL data. Backend and frontend CI pass on GitHub Actions.
 >
-> **Next:** M5 focuses on a live operations console, real RabbitMQ queue and worker metrics, controlled load generation, reproducible performance experiments, and a publicly accessible demonstration. AWS EKS remains an optional learning exercise rather than a requirement for public hosting.
+> **Next:** Verify M5A-2, then continue the later M5 live operations console, controlled load generation, reproducible performance experiments, failure visualization, and affordable public demonstration. AWS EKS remains an optional learning exercise rather than a requirement for public hosting.
 >
 > **Project context:** ComputeGrid is an independent portfolio project inspired by the reliability and infrastructure challenges of cloud compute services. It is not a D-Wave product, an implementation of D-Wave's Hybrid Solver Service, or affiliated with D-Wave. All current workloads execute on classical CPUs; no QPU or external quantum solver is used.
 
@@ -76,7 +76,8 @@ The project prioritizes distributed-systems correctness and practical operations
 **FastAPI**
 
 - Validates incoming job requests.
-- Provides development-only bearer-token authentication.
+- Preserves developer bearer-token authentication and optionally provides
+  isolated, signed anonymous demo sessions.
 - Supports client-scoped idempotency keys.
 - Persists jobs and outbox events atomically.
 - Exposes job status, results, and execution history.
@@ -750,7 +751,9 @@ From the repository root:
 cp .env.example .env
 ```
 
-Edit `.env` to configure local database and broker credentials, connection settings, development API token, and CORS origins.
+Edit `.env` to configure local database and broker credentials, connection
+settings, development API token, optional anonymous demo controls, and CORS
+origins.
 
 Never commit `.env` or use development credentials for a public deployment.
 
@@ -790,7 +793,24 @@ Open:
 http://localhost:5173
 ```
 
-Enter the configured development bearer token in the dashboard.
+By default, enter the configured development bearer token in the dashboard.
+To run the bounded anonymous experience, enable the backend with
+`COMPUTEGRID_DEMO_MODE_ENABLED=true`, set a random
+`COMPUTEGRID_DEMO_SESSION_SECRET` of at least 32 characters, and create
+`apps/web/.env.local` from `apps/web/.env.example` with:
+
+```dotenv
+VITE_DEMO_MODE=true
+```
+
+The frontend then uses a signed, HttpOnly browser cookie and no longer asks the
+visitor for a token. Keep `VITE_DEMO_MODE` aligned with the API setting. For a
+cross-site HTTPS deployment, use secure cookies and an appropriate SameSite
+policy; the local Compose and kind defaults use same-site HTTP development
+settings. Use the same stable signing secret for every API replica; rotating it
+intentionally invalidates existing anonymous sessions. Use the same hostname
+(`localhost` or `127.0.0.1`) for both Vite and the API during local testing so
+the browser applies the expected same-site cookie policy.
 
 ### Development Dependencies Only
 
@@ -977,6 +997,67 @@ This behavior was verified by stopping PostgreSQL and restoring it.
 
 Temporary database unavailability should not automatically be interpreted as a reason to restart an otherwise functioning API process.
 
+### Backend Operations Summary
+
+**M5A-1 status: Complete and verified in Docker Compose and Kubernetes**
+
+M5A-1 provides an authenticated, read-only snapshot for the future live
+operations console:
+
+```text
+GET /v1/operations/summary
+```
+
+The response uses actual dependency data:
+
+- **RabbitMQ:** configured queue name, ready messages, unacknowledged messages,
+  and consumer count from the management API.
+- **Celery workers:** worker identity, availability, `IDLE` or `BUSY` activity,
+  and the currently executing Job ID when the active task exposes one.
+- **PostgreSQL:** authoritative job counts grouped by every durable job state.
+
+Each dependency reports `AVAILABLE`, `UNAVAILABLE`, or `UNKNOWN`
+independently. If RabbitMQ management, Celery inspection, or PostgreSQL is
+temporarily unavailable, the endpoint returns a partial snapshot with null or
+unavailable data rather than fabricated zero values or an unhandled failure.
+
+With the development token loaded, query Docker Compose on port 8000 or the
+Kubernetes port-forward on port 8001:
+
+```bash
+curl --fail \
+  -H "Authorization: Bearer $COMPUTEGRID_DEVELOPMENT_API_TOKEN" \
+  http://127.0.0.1:8000/v1/operations/summary
+
+curl --fail \
+  -H "Authorization: Bearer $COMPUTEGRID_DEVELOPMENT_API_TOKEN" \
+  http://127.0.0.1:8001/v1/operations/summary
+```
+
+Remote RabbitMQ and Celery calls use the bounded
+`COMPUTEGRID_OPERATIONS_TIMEOUT_SECONDS` setting. PostgreSQL statements and
+connection establishment also have finite timeouts. The endpoint performs no
+queue, worker, or job mutations and retains the existing development bearer
+authentication boundary.
+
+When anonymous demo mode is enabled, the same endpoint returns only safe
+aggregates: queue counters, worker availability/idle/busy totals, and job counts
+by state. It omits the RabbitMQ queue name, Celery worker identities, and active
+Job IDs. Developer bearer authentication continues to return the full M5A-1
+response. RabbitMQ and Celery failures retain the same graceful degradation
+behavior. If PostgreSQL-backed abuse protection cannot be enforced, anonymous
+requests fail closed with `503` rather than bypassing the limits.
+
+Verification completed successfully in both supported environments:
+
+- Docker Compose returned live RabbitMQ, Celery worker, and PostgreSQL data.
+- The local kind deployment reported four RabbitMQ consumers and four Celery
+  workers, all `AVAILABLE` and `IDLE` at the verification snapshot.
+- Kubernetes returned PostgreSQL counts grouped by the persisted job states.
+- Focused unit tests and PostgreSQL integration tests passed.
+- `make backend-check` passed, including Ruff, strict mypy, and backend unit
+  tests.
+
 ### Diagnostic Script
 
 Run:
@@ -1159,12 +1240,16 @@ transitions prevent more than one authoritative result.
 | M4B | Kubernetes backend deployment and end-to-end execution | Complete |
 | M4C | Manual worker scaling and queue distribution | Complete |
 | M4D | Pod self-healing, rolling restart, and in-flight recovery | Complete |
-| M5 | Live operations console, real metrics, load benchmarks, recovery visualization, affordable public demo | Next |
+| M5 | Live operations console, real metrics, load benchmarks, recovery visualization, affordable public demo | In progress |
+| M5A-1 | Authenticated backend observability API | Complete |
+| M5A-2 | Isolated anonymous demo access and abuse protections | Implemented; verification pending |
 
 ### M5 — Interactive Demo and Reliability Evidence
 
-M5 is the next milestone. It will build a real-data-driven demonstration of
-ComputeGrid's queue-based execution and failure recovery with:
+M5 is in progress. M5A-1's authenticated backend operations summary is complete
+and verified. M5A-2 is implemented and awaiting local verification; later work
+will build a real-data-driven demonstration of ComputeGrid's queue-based
+execution and failure recovery with:
 
 - A live operations console.
 - Actual RabbitMQ queue and worker metrics.
@@ -1191,6 +1276,61 @@ Use four worker cards with a subtle rabbit-inspired visual design.
 The interface should remain professional and consistent with the existing dashboard.
 
 **All displayed operational state must be derived from actual backend data, not a frontend-only simulation.**
+
+#### M5A-2 Anonymous Demo Access
+
+Anonymous mode is opt-in and preserves developer bearer authentication. The
+API issues a random, signed, HttpOnly session cookie and maps it to an opaque
+client identifier. Existing repository filtering then limits job lists,
+details, results, and attempt history to the browser session that created them;
+unknown jobs return `404` rather than revealing another visitor's records.
+
+Abuse controls are enforced on the server:
+
+- PostgreSQL-backed fixed-window submission, read, operations, and global
+  request limits work across API processes.
+- Per-visitor and global active- and retained-job admission limits are checked
+  under a PostgreSQL advisory transaction lock. Expired rate-counter rows are
+  removed opportunistically.
+- Anonymous Monte Carlo sample counts and optimization variable counts are
+  stricter than the already bounded developer API schemas.
+- The operations endpoint exposes aggregate capacity only. It never grants
+  infrastructure-control operations or reveals developer credentials.
+
+The main settings are documented in `.env.example`. Compose passes them to the
+API, while Kubernetes stores the session-signing secret in
+`computegrid-secrets` and the non-sensitive limits in `computegrid-config`.
+`scripts/k8s-create-secret.sh` generates or safely adds the signing secret;
+set `COMPUTEGRID_DEMO_MODE_ENABLED` to `"true"` in the ConfigMap only when the
+anonymous deployment is intended.
+
+For direct API use, let the client retain the HttpOnly cookie. This example
+creates a private cookie jar and lists only that anonymous session's jobs:
+
+```bash
+curl --fail --cookie-jar /tmp/computegrid-demo.cookies \
+  --cookie /tmp/computegrid-demo.cookies \
+  http://127.0.0.1:8000/v1/jobs
+```
+
+Use the same cookie options for submission, detail, and safe operations-summary
+requests. Do not place the cookie value in URLs or logs.
+
+This is bounded portfolio-demo access, not user authentication. The cookie is
+the visitor's only proof of ownership: clearing or losing it loses access to
+that session's jobs, and copying it transfers that access until expiry. Rate
+limits reduce abuse but do not replace an edge proxy, network-level denial-of-
+service protection, moderation, retention policies, or production identity
+management.
+
+Pending local verification for this milestone:
+
+```bash
+make backend-check
+make test-integration
+make test-all
+make web-check
+```
 
 #### Controlled Load Generator
 
@@ -1302,14 +1442,16 @@ ComputeGrid is an engineering portfolio and learning project, not a production-r
 
 Important boundaries:
 
-- Development bearer-token authentication is not production-grade identity management.
+- Developer bearer tokens and anonymous signed-cookie sessions are not
+  production-grade identity management.
 - API idempotency and worker message deduplication solve different problems.
 - At-least-once delivery does not imply exactly-once physical execution.
 - Fixed execution leases require bounded workloads.
 - External side effects need additional idempotency safeguards.
 - PostgreSQL and RabbitMQ must not be exposed directly to the public internet.
 - Credentials must never be committed to Git.
-- Public deployment requires appropriate authentication, abuse protection, and resource controls.
+- Anonymous demo limits are deliberately conservative but do not make an
+  internet deployment immune to distributed abuse.
 - Public infrastructure-control operations must be disabled or strongly isolated.
 - Database backup, disaster recovery, production observability, and operational hardening remain outside the current scope.
 
@@ -1367,13 +1509,19 @@ The implemented platform includes:
 - Structured lifecycle logging.
 - Health and readiness probes.
 - Operational diagnostics.
+- An authenticated, read-only operations summary backed by live RabbitMQ,
+  Celery worker, and PostgreSQL data.
+- Optional anonymous browser sessions with per-visitor job isolation, safe
+  aggregate operations data, and shared abuse controls.
 - A verified full-stack deployment on local kind Kubernetes.
 - Manual worker scaling with RabbitMQ competing-consumer distribution.
 - Kubernetes Pod self-healing and successful rolling restart behavior.
 - Verified in-flight worker failure recovery using durable leases and fencing.
 
-The next engineering milestone is M5: a live operations console backed by
-actual RabbitMQ and worker data, controlled load generation, throughput
-benchmarks, failure-recovery visualization, and an affordable public demo.
+M5A-2 anonymous demo access is implemented and awaiting local verification.
+The completed M5A-1 API supplies real RabbitMQ, Celery worker, and PostgreSQL
+data for the later live operations console, controlled load generation,
+throughput benchmarks, failure-recovery visualization, and affordable public
+demo. The overall M5 milestone remains in progress.
 
 The central objective is to demonstrate **distributed-systems correctness, automated validation, and practical cloud operations through a small, explainable system**.

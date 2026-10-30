@@ -10,6 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from computegrid_api.api.jobs import router as jobs_router
+from computegrid_api.api.operations import router as operations_router
 from computegrid_api.config import get_cors_settings
 from computegrid_api.db.session import SessionFactory, get_session_factory
 from computegrid_api.logging_config import configure_logging
@@ -35,11 +36,12 @@ app = FastAPI(title="ComputeGrid API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_cors_settings().cors_origins,
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
 )
 app.include_router(jobs_router)
+app.include_router(operations_router)
 
 
 @app.get("/healthz", response_model=HealthResponse, tags=["health"])

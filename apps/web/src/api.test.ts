@@ -7,6 +7,26 @@ afterEach(() => {
 });
 
 describe("API client", () => {
+  it("uses credentialed cookies without exposing an authorization token", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ items: [], total: 0, limit: 10, offset: 0 }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await listJobs(null, 10, 0);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:8000/v1/jobs?limit=10&offset=0",
+      expect.any(Object),
+    );
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(request.credentials).toBe("include");
+    expect(request.headers).not.toHaveProperty("Authorization");
+  });
+
   it("submits an authenticated idempotent job", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(

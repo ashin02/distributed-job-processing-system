@@ -59,6 +59,38 @@ spec:
                   key: POSTGRES_PASSWORD
             - name: COMPUTEGRID_DATABASE_URL
               value: postgresql+psycopg://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/$(POSTGRES_DB)
+            - name: COMPUTEGRID_DATABASE_CONNECT_TIMEOUT_SECONDS
+              valueFrom:
+                configMapKeyRef:
+                  name: computegrid-config
+                  key: COMPUTEGRID_DATABASE_CONNECT_TIMEOUT_SECONDS
+            - name: RABBITMQ_USER
+              valueFrom:
+                secretKeyRef:
+                  name: computegrid-secrets
+                  key: RABBITMQ_USER
+            - name: RABBITMQ_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: computegrid-secrets
+                  key: RABBITMQ_PASSWORD
+            - name: COMPUTEGRID_BROKER_URL
+              value: amqp://$(RABBITMQ_USER):$(RABBITMQ_PASSWORD)@rabbitmq:5672//
+            - name: COMPUTEGRID_JOB_QUEUE
+              valueFrom:
+                configMapKeyRef:
+                  name: computegrid-config
+                  key: COMPUTEGRID_JOB_QUEUE
+            - name: COMPUTEGRID_RABBITMQ_MANAGEMENT_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: computegrid-config
+                  key: COMPUTEGRID_RABBITMQ_MANAGEMENT_URL
+            - name: COMPUTEGRID_OPERATIONS_TIMEOUT_SECONDS
+              valueFrom:
+                configMapKeyRef:
+                  name: computegrid-config
+                  key: COMPUTEGRID_OPERATIONS_TIMEOUT_SECONDS
             - name: COMPUTEGRID_DEVELOPMENT_API_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -69,6 +101,86 @@ spec:
                 configMapKeyRef:
                   name: computegrid-config
                   key: COMPUTEGRID_DEVELOPMENT_CLIENT_ID
+            - name: COMPUTEGRID_DEMO_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: computegrid-secrets
+                  key: COMPUTEGRID_DEMO_SESSION_SECRET
+            - name: COMPUTEGRID_DEMO_MODE_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: computegrid-config
+                  key: COMPUTEGRID_DEMO_MODE_ENABLED
+            - name: COMPUTEGRID_DEMO_SESSION_TTL_SECONDS
+              valueFrom:
+                configMapKeyRef:
+                  name: computegrid-config
+                  key: COMPUTEGRID_DEMO_SESSION_TTL_SECONDS
+            - name: COMPUTEGRID_DEMO_COOKIE_SECURE
+              valueFrom:
+                configMapKeyRef:
+                  name: computegrid-config
+                  key: COMPUTEGRID_DEMO_COOKIE_SECURE
+            - name: COMPUTEGRID_DEMO_COOKIE_SAMESITE
+              valueFrom:
+                configMapKeyRef:
+                  name: computegrid-config
+                  key: COMPUTEGRID_DEMO_COOKIE_SAMESITE
+            - name: COMPUTEGRID_DEMO_SUBMISSION_LIMIT
+              valueFrom:
+                configMapKeyRef:
+                  name: computegrid-config
+                  key: COMPUTEGRID_DEMO_SUBMISSION_LIMIT
+            - name: COMPUTEGRID_DEMO_READ_LIMIT
+              valueFrom:
+                configMapKeyRef:
+                  name: computegrid-config
+                  key: COMPUTEGRID_DEMO_READ_LIMIT
+            - name: COMPUTEGRID_DEMO_OPERATIONS_LIMIT
+              valueFrom:
+                configMapKeyRef:
+                  name: computegrid-config
+                  key: COMPUTEGRID_DEMO_OPERATIONS_LIMIT
+            - name: COMPUTEGRID_DEMO_RATE_WINDOW_SECONDS
+              valueFrom:
+                configMapKeyRef:
+                  name: computegrid-config
+                  key: COMPUTEGRID_DEMO_RATE_WINDOW_SECONDS
+            - name: COMPUTEGRID_DEMO_GLOBAL_REQUEST_LIMIT
+              valueFrom:
+                configMapKeyRef:
+                  name: computegrid-config
+                  key: COMPUTEGRID_DEMO_GLOBAL_REQUEST_LIMIT
+            - name: COMPUTEGRID_DEMO_MAX_ACTIVE_JOBS_PER_CLIENT
+              valueFrom:
+                configMapKeyRef:
+                  name: computegrid-config
+                  key: COMPUTEGRID_DEMO_MAX_ACTIVE_JOBS_PER_CLIENT
+            - name: COMPUTEGRID_DEMO_MAX_ACTIVE_JOBS_GLOBAL
+              valueFrom:
+                configMapKeyRef:
+                  name: computegrid-config
+                  key: COMPUTEGRID_DEMO_MAX_ACTIVE_JOBS_GLOBAL
+            - name: COMPUTEGRID_DEMO_MAX_RETAINED_JOBS_PER_CLIENT
+              valueFrom:
+                configMapKeyRef:
+                  name: computegrid-config
+                  key: COMPUTEGRID_DEMO_MAX_RETAINED_JOBS_PER_CLIENT
+            - name: COMPUTEGRID_DEMO_MAX_RETAINED_JOBS_GLOBAL
+              valueFrom:
+                configMapKeyRef:
+                  name: computegrid-config
+                  key: COMPUTEGRID_DEMO_MAX_RETAINED_JOBS_GLOBAL
+            - name: COMPUTEGRID_DEMO_MAX_MONTE_CARLO_SAMPLES
+              valueFrom:
+                configMapKeyRef:
+                  name: computegrid-config
+                  key: COMPUTEGRID_DEMO_MAX_MONTE_CARLO_SAMPLES
+            - name: COMPUTEGRID_DEMO_MAX_MODEL_VARIABLES
+              valueFrom:
+                configMapKeyRef:
+                  name: computegrid-config
+                  key: COMPUTEGRID_DEMO_MAX_MODEL_VARIABLES
             - name: COMPUTEGRID_CORS_ORIGINS
               valueFrom:
                 configMapKeyRef:

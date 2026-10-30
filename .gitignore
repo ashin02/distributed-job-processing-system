@@ -23,6 +23,9 @@ apps/web/coverage/
 
 # Local configuration and editor files
 .env
+.env.*
+!.env.example
+!apps/web/.env.example
 .env.k8s
 .idea/
 .vscode/

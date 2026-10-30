@@ -72,6 +72,8 @@ input:focus { border-color: #4f9f81; box-shadow: 0 0 0 3px rgba(48, 139, 105, 0.
 .auth-form input { border-color: #39564b; color: white; background: #1d332b; }
 .connection { color: #d0a46e; font-size: 0.68rem; }
 .connection.connected { color: #7bd5ae; }
+.demo-access { align-content: center; justify-items: end; min-width: auto; }
+.demo-access > strong { font-size: 0.86rem; }
 
 main { width: min(1440px, calc(100% - 3rem)); margin: 1.5rem auto 4rem; }
 .panel { background: rgba(249, 251, 248, .94); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); backdrop-filter: blur(8px); }

@@ -91,3 +91,4 @@ async def test_local_frontend_cors_preflight() -> None:
 
     assert response.status_code == httpx.codes.OK
     assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+    assert response.headers["access-control-allow-credentials"] == "true"

@@ -2,17 +2,21 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
+from typing import cast
 from uuid import uuid4
 
 import pytest
 from computegrid_api.api.auth import AuthenticatedClient
 from computegrid_api.api.jobs import create_job, get_job, list_jobs
 from computegrid_api.api.schemas import JobCreateRequest
+from computegrid_api.config import Settings
 from computegrid_api.db.models import Job, JobState, OutboxEvent
 from computegrid_api.db.session import SessionFactory
+from computegrid_api.demo_access import DemoAccessService
 from computegrid_api.jobs import repository as repository_module
 from computegrid_api.jobs.repository import JobRepository
 from fastapi import HTTPException
+from pydantic import SecretStr
 from sqlalchemy import Engine, func, select
 from sqlalchemy.exc import IntegrityError
 
@@ -23,6 +27,19 @@ VALID_REQUEST = {
     "parameters": {"samples": 1000, "seed": 42},
 }
 
+DEVELOPER_SETTINGS = Settings(
+    database_url="postgresql+psycopg://unused",
+    development_api_token=SecretStr("unused"),
+)
+
+
+class NoopDemoAccessService:
+    def check(self, **_: object) -> None:
+        return None
+
+
+DEMO_ACCESS = cast(DemoAccessService, NoopDemoAccessService())
+
 
 @pytest.fixture
 def repository(session_factory: SessionFactory) -> JobRepository:
@@ -30,19 +47,23 @@ def repository(session_factory: SessionFactory) -> JobRepository:
 
 
 def test_submit_get_and_list_jobs(repository: JobRepository, migrated_engine: Engine) -> None:
-    client = AuthenticatedClient(client_id="integration-client")
+    client = AuthenticatedClient(client_id="integration-client", is_developer=True)
     request = JobCreateRequest.model_validate(VALID_REQUEST)
     first_response = create_job(
         request=request,
         idempotency_key="request-1",
         client=client,
         repository=repository,
+        settings=DEVELOPER_SETTINGS,
+        demo_access=DEMO_ACCESS,
     )
     second_response = create_job(
         request=request,
         idempotency_key="request-2",
         client=client,
         repository=repository,
+        settings=DEVELOPER_SETTINGS,
+        demo_access=DEMO_ACCESS,
     )
 
     assert first_response.state == JobState.ACCEPTED
@@ -52,11 +73,20 @@ def test_submit_get_and_list_jobs(repository: JobRepository, migrated_engine: En
         job_id=first_response.job_id,
         client=client,
         repository=repository,
+        settings=DEVELOPER_SETTINGS,
+        demo_access=DEMO_ACCESS,
     )
     assert get_response.attempts == []
     assert get_response.result is None
 
-    page = list_jobs(client=client, repository=repository, limit=1, offset=0)
+    page = list_jobs(
+        client=client,
+        repository=repository,
+        settings=DEVELOPER_SETTINGS,
+        demo_access=DEMO_ACCESS,
+        limit=1,
+        offset=0,
+    )
     assert page.total == 2
     assert page.limit == 1
     assert len(page.items) == 1
@@ -68,19 +98,23 @@ def test_submit_get_and_list_jobs(repository: JobRepository, migrated_engine: En
 def test_identical_retry_returns_one_job_and_event(
     repository: JobRepository, migrated_engine: Engine
 ) -> None:
-    client = AuthenticatedClient(client_id="integration-client")
+    client = AuthenticatedClient(client_id="integration-client", is_developer=True)
     request = JobCreateRequest.model_validate(VALID_REQUEST)
     first = create_job(
         request=request,
         idempotency_key="same-request",
         client=client,
         repository=repository,
+        settings=DEVELOPER_SETTINGS,
+        demo_access=DEMO_ACCESS,
     )
     retry = create_job(
         request=request,
         idempotency_key="same-request",
         client=client,
         repository=repository,
+        settings=DEVELOPER_SETTINGS,
+        demo_access=DEMO_ACCESS,
     )
 
     assert first == retry
@@ -90,12 +124,14 @@ def test_identical_retry_returns_one_job_and_event(
 
 
 def test_conflicting_retry_returns_conflict(repository: JobRepository) -> None:
-    client = AuthenticatedClient(client_id="integration-client")
+    client = AuthenticatedClient(client_id="integration-client", is_developer=True)
     create_job(
         request=JobCreateRequest.model_validate(VALID_REQUEST),
         idempotency_key="conflict",
         client=client,
         repository=repository,
+        settings=DEVELOPER_SETTINGS,
+        demo_access=DEMO_ACCESS,
     )
 
     with pytest.raises(HTTPException) as raised:
@@ -109,6 +145,8 @@ def test_conflicting_retry_returns_conflict(repository: JobRepository) -> None:
             idempotency_key="conflict",
             client=client,
             repository=repository,
+            settings=DEVELOPER_SETTINGS,
+            demo_access=DEMO_ACCESS,
         )
 
     assert raised.value.status_code == 409

@@ -168,3 +168,18 @@ class OutboxEvent(Base):
     )
 
     job: Mapped[Job] = relationship(back_populates="outbox_events")
+
+
+class DemoRateLimit(Base):
+    """Shared fixed-window counter for anonymous demo traffic."""
+
+    __tablename__ = "demo_rate_limits"
+    __table_args__ = (
+        CheckConstraint("request_count > 0", name="ck_demo_rate_limits_count_positive"),
+        Index("ix_demo_rate_limits_window_started_at", "window_started_at"),
+    )
+
+    scope: Mapped[str] = mapped_column(String(64), primary_key=True)
+    subject: Mapped[str] = mapped_column(String(255), primary_key=True)
+    window_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    request_count: Mapped[int] = mapped_column(Integer, nullable=False)

@@ -462,7 +462,13 @@ function ExecutionTimeline({ job }: { job: JobDetail }) {
   );
 }
 
-export default function App() {
+interface AppProps {
+  demoMode?: boolean;
+}
+
+export default function App({
+  demoMode = import.meta.env.VITE_DEMO_MODE === "true",
+}: AppProps) {
   const storedToken = sessionStorage.getItem(TOKEN_STORAGE_KEY) ?? "";
   const [tokenDraft, setTokenDraft] = useState(storedToken);
   const [token, setToken] = useState(storedToken);
@@ -488,7 +494,10 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [polling, setPolling] = useState(false);
 
-  const connected = token.length > 0;
+  const connected = demoMode || token.length > 0;
+  const authToken = demoMode ? null : token || null;
+  const monteCarloSampleLimit = demoMode ? 1_000_000 : 10_000_000;
+  const modelVariableLimit = demoMode ? 12 : 16;
   const pageNumber = Math.floor(offset / PAGE_SIZE) + 1;
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const selectedSummary = useMemo(
@@ -501,11 +510,11 @@ export default function App() {
 
   const loadJobs = useCallback(
     async (targetOffset = offset, quiet = false) => {
-      if (!token) return;
+      if (!connected) return;
       if (!quiet) setListLoading(true);
       setListError(null);
       try {
-        const page = await listJobs(token, PAGE_SIZE, targetOffset);
+        const page = await listJobs(authToken, PAGE_SIZE, targetOffset);
         setJobs(page.items);
         setTotal(page.total);
       } catch (error) {
@@ -514,55 +523,55 @@ export default function App() {
         if (!quiet) setListLoading(false);
       }
     },
-    [offset, token],
+    [authToken, connected, offset],
   );
 
   const loadDetail = useCallback(
     async (jobId: string, quiet = false) => {
-      if (!token) return;
+      if (!connected) return;
       if (!quiet) setDetailLoading(true);
       setDetailError(null);
       try {
-        setDetail(await getJob(token, jobId));
+        setDetail(await getJob(authToken, jobId));
       } catch (error) {
         setDetailError(errorMessage(error));
       } finally {
         if (!quiet) setDetailLoading(false);
       }
     },
-    [token],
+    [authToken, connected],
   );
 
   useEffect(() => {
-    if (token) void loadJobs();
+    if (connected) void loadJobs();
     else {
       setJobs([]);
       setTotal(0);
       setDetail(null);
     }
-  }, [loadJobs, token]);
+  }, [connected, loadJobs]);
 
   useEffect(() => {
-    if (selectedJobId && token) void loadDetail(selectedJobId);
-  }, [loadDetail, selectedJobId, token]);
+    if (selectedJobId && connected) void loadDetail(selectedJobId);
+  }, [connected, loadDetail, selectedJobId]);
 
   useEffect(() => {
-    if (!polling || !token || selectedJobIsActive) return undefined;
+    if (!polling || !connected || selectedJobIsActive) return undefined;
     const timer = window.setInterval(() => {
       void loadJobs(offset, true);
       if (selectedJobId) void loadDetail(selectedJobId, true);
     }, POLL_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [loadDetail, loadJobs, offset, polling, selectedJobId, selectedJobIsActive, token]);
+  }, [connected, loadDetail, loadJobs, offset, polling, selectedJobId, selectedJobIsActive]);
 
   useEffect(() => {
-    if (!token || !selectedJobId || !selectedJobIsActive) return undefined;
+    if (!connected || !selectedJobId || !selectedJobIsActive) return undefined;
     const timer = window.setInterval(() => {
       void loadDetail(selectedJobId, true);
       void loadJobs(offset, true);
     }, ACTIVE_POLL_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [loadDetail, loadJobs, offset, selectedJobId, selectedJobIsActive, token]);
+  }, [connected, loadDetail, loadJobs, offset, selectedJobId, selectedJobIsActive]);
 
   function connect(event: FormEvent) {
     event.preventDefault();
@@ -580,8 +589,14 @@ export default function App() {
     if (jobType === "monte_carlo_pi") {
       const sampleCount = Number(samples);
       const seedValue = Number(seed);
-      if (!Number.isInteger(sampleCount) || sampleCount < 1 || sampleCount > 10_000_000) {
-        setSubmitError("Samples must be an integer between 1 and 10,000,000.");
+      if (
+        !Number.isInteger(sampleCount) ||
+        sampleCount < 1 ||
+        sampleCount > monteCarloSampleLimit
+      ) {
+        setSubmitError(
+          `Samples must be an integer between 1 and ${monteCarloSampleLimit.toLocaleString()}.`,
+        );
         return;
       }
       if (!Number.isInteger(seedValue)) {
@@ -630,7 +645,7 @@ export default function App() {
     setNotice(null);
     try {
       const accepted = await submitJob(
-        token,
+        authToken,
         request,
         idempotencyKey,
       );
@@ -656,7 +671,12 @@ export default function App() {
             <h1>ComputeGrid</h1>
           </div>
         </div>
-        <form className="auth-form" onSubmit={connect}>
+        {demoMode ? (
+          <div className="auth-form demo-access" aria-label="Access mode">
+            <strong>Anonymous demo</strong>
+            <span className="connection connected">Private browser session</span>
+          </div>
+        ) : <form className="auth-form" onSubmit={connect}>
           <label htmlFor="api-token">Development API token</label>
           <div className="inline-control">
             <input
@@ -674,7 +694,7 @@ export default function App() {
           <span className={connected ? "connection connected" : "connection"}>
             {connected ? "Connected" : "Token required"}
           </span>
-        </form>
+        </form>}
       </header>
 
       <main>
@@ -748,13 +768,13 @@ export default function App() {
                     <input
                       type="number"
                       min="1"
-                      max="10000000"
+                      max={monteCarloSampleLimit}
                       step="1"
                       value={samples}
                       onChange={(event) => setSamples(event.target.value)}
                       disabled={!connected || submitting}
                     />
-                    <span>1 to 10,000,000 deterministic samples</span>
+                    <span>1 to {monteCarloSampleLimit.toLocaleString()} deterministic samples</span>
                   </label>
                   <label>
                     Seed
@@ -773,7 +793,7 @@ export default function App() {
                   label="Weighted graph JSON"
                   value={graphJson}
                   onChange={setGraphJson}
-                  hint="2–16 nodes, unique undirected edges, positive weights"
+                  hint={`2–${modelVariableLimit} nodes, unique undirected edges, positive weights`}
                   disabled={!connected || submitting}
                 />
               ) : jobType === "bqm" ? (
@@ -781,7 +801,7 @@ export default function App() {
                   label="Binary Quadratic Model JSON"
                   value={bqmJson}
                   onChange={setBqmJson}
-                  hint="BINARY or SPIN model with at most 16 variables"
+                  hint={`BINARY or SPIN model with at most ${modelVariableLimit} variables`}
                   disabled={!connected || submitting}
                 />
               ) : (
@@ -789,7 +809,7 @@ export default function App() {
                   label="Constrained Quadratic Model JSON"
                   value={cqmJson}
                   onChange={setCqmJson}
-                  hint="Restricted binary/linear CQM with at most 16 variables and 32 constraints"
+                  hint={`Restricted binary/linear CQM with at most ${modelVariableLimit} variables and 32 constraints`}
                   disabled={!connected || submitting}
                 />
               )}
