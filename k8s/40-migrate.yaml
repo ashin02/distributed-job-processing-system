@@ -1,0 +1,52 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: computegrid-migrate
+  namespace: computegrid
+  labels:
+    app.kubernetes.io/name: computegrid-migrate
+    app.kubernetes.io/part-of: computegrid
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: computegrid-migrate
+        app.kubernetes.io/part-of: computegrid
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: computegrid:local
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - -m
+            - alembic
+            - upgrade
+            - head
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: computegrid-config
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: computegrid-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: computegrid-secrets
+                  key: POSTGRES_PASSWORD
+            - name: COMPUTEGRID_DATABASE_URL
+              value: postgresql+psycopg://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/$(POSTGRES_DB)
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi

@@ -3,9 +3,9 @@
 
 **A fault-tolerant distributed job-processing platform built with Python, FastAPI, PostgreSQL, RabbitMQ, Celery, and React.**
 
-> **Status (October 2026):** M1–M3 are implemented. Backend and frontend CI pass on GitHub Actions. Distributed execution, retry handling, lease-based crash recovery, structured logging, readiness checks, and operational diagnostics have been verified.
+> **Status (October 2026):** M1–M4D are complete. ComputeGrid has been deployed and verified on a local single-node Kubernetes cluster using kind. Verified capabilities include distributed execution, durable retries, worker crash recovery, horizontal worker scaling, Kubernetes self-healing, rolling restarts, and in-flight worker failure recovery. Backend and frontend CI pass on GitHub Actions.
 >
-> **Next:** M4 — Kubernetes deployment and horizontal scaling. M5 — Interactive queue/worker demo, controlled load generation, failure recovery visualization, and public demonstration.
+> **Next:** M5 focuses on a live operations console, real RabbitMQ queue and worker metrics, controlled load generation, reproducible performance experiments, and a publicly accessible demonstration. AWS EKS remains an optional learning exercise rather than a requirement for public hosting.
 >
 > **Project context:** ComputeGrid is an independent portfolio project inspired by the reliability and infrastructure challenges of cloud compute services. It is not a D-Wave product, an implementation of D-Wave's Hybrid Solver Service, or affiliated with D-Wave. All current workloads execute on classical CPUs; no QPU or external quantum solver is used.
 
@@ -181,9 +181,7 @@ If a worker crashes or stops responding:
 4. The job is scheduled for retry or marked failed if attempts are exhausted.
 5. A subsequent worker can claim and execute the job.
 
-The implementation uses fencing checks to prevent an outdated attempt from committing a result after recovery.
-
-**Verified failure experiment:** An in-flight Celery worker was terminated with `SIGKILL`. The original attempt was recorded as `ABANDONED` with `WorkerLeaseExpired`, and a subsequent attempt completed successfully.
+The implementation uses fencing checks to prevent an outdated attempt from committing a result after recovery. Detailed evidence from the verified Kubernetes in-flight failure experiment is recorded once in the M4D section.
 
 ### Guarantee Boundary
 
@@ -391,6 +389,329 @@ ComputeGrid does not claim that quantum approaches are universally faster or bet
 - Read-only operational diagnostics through `make doctor`.
 - Verified PostgreSQL and Worker failure detection.
 
+### M4A — Local Kubernetes Environment
+
+**Status: Complete — created and verified with kind and Kubernetes v1.37.0**
+
+M4A provides a minimal single-node Kubernetes learning environment without
+deploying ComputeGrid services:
+
+- **kind** runs Kubernetes Nodes as Docker containers. The cluster is always
+  named `computegrid`.
+- **kubectl** is the command-line client used to inspect Kubernetes resources.
+- A **Node** is a machine participating in a cluster; this local cluster has one
+  control-plane Node backed by a Docker container.
+- A **Pod** is Kubernetes' smallest deployable unit. M4A initially verified only
+  Kubernetes system Pods; M4B later added the ComputeGrid workloads.
+- A **context** selects a cluster, credentials, and default namespace from the
+  kubeconfig file. Project commands always pass the explicit
+  `kind-computegrid` context and never rely on the current context.
+
+No kind configuration file is needed for the default single-node topology.
+
+#### Install kind and kubectl in WSL2
+
+Use the official [kind Quick Start](https://kind.sigs.k8s.io/docs/user/quick-start/)
+and [kubectl Linux installation guide](https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/).
+For an x86-64 WSL2 distribution, the following installs both binaries in the
+user-local executable directory without modifying the system Python:
+
+```bash
+mkdir -p "$HOME/.local/bin"
+
+curl -Lo "$HOME/.local/bin/kind" \
+  https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64
+chmod +x "$HOME/.local/bin/kind"
+
+KUBECTL_VERSION="$(curl -L -s https://dl.k8s.io/release/stable.txt)"
+curl -Lo /tmp/kubectl \
+  "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+curl -Lo /tmp/kubectl.sha256 \
+  "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl.sha256"
+echo "$(cat /tmp/kubectl.sha256)  /tmp/kubectl" | sha256sum --check
+install -m 0755 /tmp/kubectl "$HOME/.local/bin/kubectl"
+rm /tmp/kubectl /tmp/kubectl.sha256
+
+export PATH="$HOME/.local/bin:$PATH"
+kind version
+kubectl version --client
+```
+
+Add `export PATH="$HOME/.local/bin:$PATH"` to `~/.bashrc` if that directory is
+not already on the WSL shell's `PATH`. ARM64 users should use the official
+`arm64` downloads instead.
+
+Docker Desktop must be running with WSL integration enabled for the active
+distribution. Confirm that `docker info` works inside WSL before creating the
+cluster.
+
+#### Create and inspect the cluster
+
+```bash
+make k8s-create
+make k8s-status
+```
+
+`k8s-create` checks Docker, kind, and kubectl before making changes. It will not
+delete or recreate an existing `computegrid` cluster, and it refuses to proceed
+if a stale `kind-computegrid` context exists without the corresponding kind
+cluster. `k8s-status` displays cluster information, the Node, and all system
+Pods. The equivalent focused inspection commands are:
+
+```bash
+kubectl --context kind-computegrid get nodes
+kubectl --context kind-computegrid get pods -A
+```
+
+A healthy cluster normally reports one `computegrid-control-plane` Node as
+`Ready`; system Pods in namespaces such as `kube-system` and `local-path-storage`
+should settle in `Running` status.
+
+Remove only this project's local cluster with:
+
+```bash
+make k8s-delete
+```
+
+The delete target passes the exact `computegrid` name to kind and treats an
+already-absent cluster as a safe no-op. It never deletes another kind cluster.
+M4B builds on this environment using plain Kubernetes manifests for the application and its dependencies. Creating the cluster through M4A alone does not deploy ComputeGrid services; application resources are provisioned separately through the M4B deployment workflow.
+
+### M4B — Local Backend Deployment
+
+**Status: Complete — deployed and verified on the local kind cluster**
+
+M4B deploys the complete backend to the existing `computegrid` kind cluster
+while the React/Vite frontend remains on the WSL2 host:
+
+```text
+WSL2 browser / curl
+        |
+ kubectl port-forward localhost:8001
+        |
+ computegrid-api Service -> API Deployment
+        |                         |
+        +----> postgres Service -> PostgreSQL StatefulSet + PVC
+                                  |
+                         transactional outbox
+                                  |
+                         Relay Deployment
+                                  |
+                         rabbitmq Service
+                                  |
+                         RabbitMQ StatefulSet + PVC
+                                  |
+                         Worker Deployment
+                                  |
+                         PostgreSQL result
+```
+
+The plain manifests under `k8s/` use these resource types:
+
+- The `computegrid` **Namespace** isolates all project resources.
+- A **ConfigMap** holds non-sensitive queue, retry, lease, client, concurrency,
+  and CORS settings.
+- The generated `computegrid-secrets` **Secret** holds local PostgreSQL,
+  RabbitMQ, and development API credentials.
+- Single-replica PostgreSQL and RabbitMQ **StatefulSets** have stable Pod names
+  and 1 GiB **PVCs** backed by kind's local-path provisioner.
+- Internal **Services** provide stable `postgres`, `rabbitmq`, and
+  `computegrid-api` DNS names; separate headless Services provide StatefulSet
+  identity. PostgreSQL and RabbitMQ have no host-facing port.
+- The one-shot `computegrid-migrate` **Job** runs `alembic upgrade head` before
+  application processes start.
+- One-replica API, relay, and worker **Deployments** use the same
+  `computegrid:local` image with `imagePullPolicy: IfNotPresent`.
+
+The API uses `/healthz` for liveness and PostgreSQL-backed `/readyz` for startup
+and readiness. PostgreSQL and RabbitMQ retain their native command probes. The
+worker readiness probe uses Celery ping; a temporary broker outage can make the
+worker unready without treating the API as dead. The relay has no artificial
+health server: Kubernetes restarts it if its PID 1 process exits.
+
+#### Local image, credentials, and deployment order
+
+The deployment uses no registry. Build and load the image directly into kind,
+then apply each stage in order:
+
+```bash
+make k8s-image
+make k8s-configure
+make k8s-dependencies
+make k8s-migrate
+make k8s-apps
+make k8s-app-status
+```
+
+The aggregate command performs those same steps sequentially:
+
+```bash
+make k8s-deploy
+```
+
+`k8s-configure` creates `.env.k8s` on first use with randomly generated,
+URL-safe local credentials, mode `0600`. The file is ignored by Git and reused
+on later deployments so credentials remain compatible with existing database
+and broker volumes. It is converted to a Kubernetes Secret through temporary
+files; credential values are not printed. Do not change the stored database or
+broker passwords after their PVCs have been initialized unless you deliberately
+remove the namespace and its data.
+
+Each kubectl command uses context `kind-computegrid` and namespace
+`computegrid` where applicable. Re-running the migration recreates only the
+migration Job and does not reset PostgreSQL. Re-running the application stage
+restarts only the three ComputeGrid Deployments so Pods use the newly loaded
+local image.
+
+Expected status includes `postgres-0` and `rabbitmq-0`, one API Pod, one relay
+Pod, and one worker Pod in `Running`; application containers with readiness
+probes should report ready. The migration Job should report `Complete`, and the
+two PVCs should report `Bound`.
+
+#### API access and end-to-end verification
+
+In a dedicated terminal, forward host port 8001 to the internal API Service:
+
+```bash
+make k8s-port-forward
+```
+
+Then, from another repository-root shell:
+
+```bash
+curl --fail http://127.0.0.1:8001/healthz
+curl --fail http://127.0.0.1:8001/readyz
+
+set -a
+. ./.env.k8s
+set +a
+
+K8S_REQUEST_ID="kubernetes-m4b-$(date +%s)"
+SUBMISSION="$(curl --fail-with-body --silent --show-error \
+  -X POST http://127.0.0.1:8001/v1/jobs \
+  -H "Authorization: Bearer $COMPUTEGRID_DEVELOPMENT_API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -H "Idempotency-Key: $K8S_REQUEST_ID" \
+  -d '{"type":"monte_carlo_pi","parameters":{"samples":10000,"seed":42}}')"
+printf '%s\n' "$SUBMISSION" | python3 -m json.tool
+JOB_ID="$(printf '%s' "$SUBMISSION" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["job_id"])')"
+
+while :; do
+  JOB_JSON="$(curl --fail-with-body --silent --show-error \
+    -H "Authorization: Bearer $COMPUTEGRID_DEVELOPMENT_API_TOKEN" \
+    "http://127.0.0.1:8001/v1/jobs/$JOB_ID")"
+  JOB_STATE="$(printf '%s' "$JOB_JSON" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])')"
+  printf 'job %s: %s\n' "$JOB_ID" "$JOB_STATE"
+  case "$JOB_STATE" in
+    SUCCEEDED | FAILED | CANCELLED) break ;;
+  esac
+  sleep 1
+done
+printf '%s\n' "$JOB_JSON" | python3 -m json.tool
+```
+
+#### Verified End-to-End Execution
+
+The complete backend was successfully deployed to the local `kind-computegrid` cluster.
+
+Verification confirmed:
+
+- PostgreSQL and RabbitMQ StatefulSets reached a healthy running state with bound PVCs.
+- The database migration Job completed successfully.
+- API, relay, and worker Deployments became ready.
+- `/healthz` and `/readyz` returned HTTP 200 through the forwarded API Service.
+- A Monte Carlo job submitted through the Kubernetes API completed successfully.
+- The API, relay, and worker produced job-correlated structured lifecycle events.
+
+The verified execution used 10,000 Monte Carlo samples with seed 42 and returned a π estimate of `3.126`.
+
+The persisted job record contained a `SUCCEEDED` execution attempt associated with a Kubernetes Celery worker.
+
+Structured logs confirmed the following events across services:
+
+- API: `job.submitted`
+- Outbox relay: `job.queued`
+- Worker: `job.claimed`
+- Worker: `job.succeeded`
+
+This validates the complete Kubernetes execution path: API persistence, transactional outbox publication, RabbitMQ delivery, Celery execution, and durable result storage.
+
+The frontend remains on the WSL2 host and connects to the Kubernetes API through port-forwarding. Public hosting is not part of M4.
+
+Inspect readiness and logs with:
+
+```bash
+kubectl --context kind-computegrid --namespace computegrid get pods -o wide
+kubectl --context kind-computegrid --namespace computegrid logs deployment/computegrid-api --tail=100
+kubectl --context kind-computegrid --namespace computegrid logs deployment/computegrid-relay --tail=100
+kubectl --context kind-computegrid --namespace computegrid logs deployment/computegrid-worker --tail=100
+kubectl --context kind-computegrid --namespace computegrid logs job/computegrid-migrate --tail=100
+```
+
+To point the existing frontend at the forwarded API, start Vite after setting:
+
+```bash
+VITE_API_BASE_URL=http://localhost:8001 npm --prefix apps/web run dev
+```
+
+#### Networking, storage, and production boundary
+
+Docker Compose resolves service names on its private Compose network.
+Kubernetes resolves Service DNS names inside the Namespace; the application
+therefore connects to `postgres:5432` and `rabbitmq:5672`. ClusterIP Services are
+not directly reachable from WSL2, so API access uses an explicit port-forward.
+
+The local-path PVCs survive ordinary Pod replacement and Deployment restarts,
+but they are tied to the single kind Node. Deleting the Namespace, its PVCs, or
+the kind cluster destroys this local data. There is no replication, backup,
+failover, TLS, external secret manager, or high availability. A production
+deployment should use managed or properly operated PostgreSQL and RabbitMQ,
+durable storage, backups, credential rotation, network policy, and appropriate
+availability design rather than these single-instance learning resources.
+
+To remove only ComputeGrid Kubernetes resources, including both PVCs and their
+data, while preserving the kind cluster:
+
+```bash
+make k8s-remove CONFIRM=computegrid
+```
+
+The explicit confirmation prevents accidental persistent-data removal. The
+ignored `.env.k8s` credential file remains local unless removed manually.
+
+#### Troubleshooting
+
+All commands remain pinned to the project context and Namespace:
+
+```bash
+# Pending Pods or PVCs
+kubectl --context kind-computegrid --namespace computegrid get pods,pvc
+kubectl --context kind-computegrid --namespace computegrid describe pod POD_NAME
+kubectl --context kind-computegrid --namespace computegrid get events --sort-by=.lastTimestamp
+
+# CrashLoopBackOff
+kubectl --context kind-computegrid --namespace computegrid logs POD_NAME --all-containers --previous
+kubectl --context kind-computegrid --namespace computegrid describe pod POD_NAME
+
+# ImagePullBackOff or stale local image
+make k8s-image
+make k8s-apps
+
+# Migration failure
+kubectl --context kind-computegrid --namespace computegrid describe job computegrid-migrate
+kubectl --context kind-computegrid --namespace computegrid logs job/computegrid-migrate --all-containers
+kubectl --context kind-computegrid --namespace computegrid get secret computegrid-secrets
+```
+
+For `Pending`, inspect scheduling and PVC events. For `CrashLoopBackOff`, inspect
+the previous container logs. For `ImagePullBackOff`, confirm the local image was
+loaded before restarting the application Deployments. Migration errors usually
+indicate PostgreSQL readiness, credentials, DNS, image, or Alembic problems; the
+deployment workflow stops before starting API, relay, or worker when migration
+does not complete.
+
 ## 6. Technology Stack
 
 | Concern | Technology | Purpose |
@@ -406,6 +727,7 @@ ComputeGrid does not claim that quantum approaches are universally faster or bet
 | CI | GitHub Actions | Automated validation |
 | Logging | Python standard logging, JSON | Cross-service troubleshooting |
 | Local infrastructure | Docker Compose | Reproducible development environment |
+| Local Kubernetes | kind, kubectl | Verified single-node backend orchestration |
 | Developer tooling | Make, Bash | Testing and diagnostics |
 
 ## 7. Running Locally
@@ -416,6 +738,7 @@ ComputeGrid does not claim that quantum approaches are universally faster or bet
 - Python 3.12 and the project's Python dependency toolchain.
 - Node.js and npm.
 - Git.
+- kind and kubectl for the local Kubernetes deployment workflow.
 
 No AWS credentials, D-Wave Leap access, or quantum hardware are required.
 
@@ -563,7 +886,9 @@ GitHub Actions is a project-specific engineering choice, not a claim that Jenkin
 
 M3 implements **Continuous Integration**, not automated production deployment.
 
-Deployment automation will be considered after defining the Kubernetes and hosting environments in M4.
+M4 established a reproducible manual deployment on local Kubernetes. Automated
+delivery remains out of scope until M5 selects an affordable public hosting
+environment with clear operational and rollback requirements.
 
 ## 9. Logging and Operational Diagnostics
 
@@ -751,7 +1076,73 @@ The current architecture supports:
 
 Scaling improves available execution capacity when the workload and system resources permit it. Linear throughput gains are not guaranteed.
 
-Formal 1/2/4-worker throughput measurements are planned for M5.
+### M4C — Verified Kubernetes Worker Scaling
+
+**M4C status: Complete**
+
+M4C verified horizontal scaling of the Celery worker Deployment from one to two
+and then four replicas in the local kind cluster.
+
+The experiments confirmed:
+
+- Kubernetes successfully created and scheduled the additional worker Pods.
+- Each worker Pod reached a ready state.
+- RabbitMQ reported two and four consumers as the corresponding worker replicas became available.
+- A batch of 12 independent jobs was executed with two workers.
+- A batch of 24 independent jobs was executed with four workers.
+- Worker logs confirmed that multiple Pods independently claimed and completed jobs from the same shared queue.
+- RabbitMQ competing-consumer distribution worked across the available workers.
+
+Worker scaling can be performed with:
+
+```bash
+kubectl --context kind-computegrid -n computegrid \
+  scale deployment/computegrid-worker --replicas=4
+```
+
+All worker Pods ran on the same single kind Node. This verifies Kubernetes
+replica management and queue distribution, not additional physical compute
+capacity. Throughput scaling for one, two, and four workers has not yet been
+benchmarked; those measurements belong to M5.
+
+### M4D — Verified Kubernetes Self-Healing and In-Flight Recovery
+
+**M4D status: Complete**
+
+M4D verified both Kubernetes-level workload management and ComputeGrid's
+application-level recovery guarantees:
+
+- Removing a worker Pod caused its Deployment to create a replacement Pod.
+- A rolling restart completed successfully and replacement workloads returned
+  to their ready state.
+- An in-flight worker process was killed while it owned a `RUNNING` job;
+  Kubernetes automatically restarted the failed container.
+- ComputeGrid independently recovered the abandoned durable attempt after its
+  lease expired and completed the job on another worker.
+
+The verified in-flight experiment recorded:
+
+| Field | Verified value |
+| --- | --- |
+| Job ID | `a2cc9b84-8fe2-43b5-a596-3c166a344437` |
+| Workload | Monte Carlo Pi, 10,000,000 samples |
+| Killed worker | `82cbv`, terminated with `SIGKILL` while the job was `RUNNING` |
+| Kubernetes response | Automatically restarted the worker container |
+| Temporary test lease | 30 seconds |
+| Attempt 1 | `ABANDONED` with `WorkerLeaseExpired` |
+| Attempt 2 | `SUCCEEDED` on worker `wphds` |
+| Final Pi estimate | `3.1423096` |
+| End-to-end recovery | Approximately 33.58 seconds |
+
+The 30-second lease was used only to make the failure exercise practical. The
+normal configured lease remains 300 seconds. Kubernetes restart and
+ComputeGrid recovery are complementary: Kubernetes restores the worker
+process, while the durable lease, retry policy, and fencing token recover the
+job and prevent a stale attempt from overwriting the authoritative result.
+
+This remains an at-least-once execution model. Physical work can overlap or be
+performed more than once after a failure even though guarded durable state
+transitions prevent more than one authoritative result.
 
 ## 11. Roadmap
 
@@ -764,46 +1155,22 @@ Formal 1/2/4-worker throughput measurements are planned for M5.
 | M2.5 | Weighted Max-Cut and dashboard improvements | Complete |
 | M2.6 | Generic BQM and restricted CQM | Complete |
 | M3 | GitHub Actions CI and lightweight operations | Complete |
-| M4 | Kubernetes deployment and scaling | Planned |
-| M5 | Interactive demo, load experiments, failure visualization, public deployment | Planned |
-
-### M4 — Kubernetes Fundamentals
-
-Deploy ComputeGrid on a local Kubernetes cluster using plain YAML manifests.
-
-Planned work:
-
-- Run a local cluster using kind, K3s, or an equivalent environment.
-- Define Deployments and Services.
-- Configure ConfigMaps and Secrets.
-- Configure container probes and termination behavior.
-- Deploy the API, relay, and worker components.
-- Integrate PostgreSQL and RabbitMQ using an appropriately scoped local deployment strategy.
-- Practice `kubectl get`, `describe`, `logs`, and `scale`.
-- Scale Celery workers from 1 to 2 to 4 replicas.
-- Verify concurrent execution and queue consumption.
-- Delete worker Pods and observe replacement behavior.
-- Verify that Kubernetes Pod replacement and application-level lease recovery are distinct mechanisms.
-- Practice rolling updates and basic troubleshooting.
-
-Use ordinary manifests before considering Helm.
-
-**Optional AWS EKS exercise**
-
-A short-lived EKS deployment may be used to explore:
-
-- Amazon EKS cluster operation.
-- IAM and ECR integration.
-- Kubernetes deployment on AWS.
-- Cloud networking and service exposure.
-
-Estimate costs before provisioning and remove billable infrastructure afterward.
-
-EKS is not required to operate the project's eventual public demo. A lower-cost hosting environment may be more suitable for persistent availability.
+| M4A | Local single-node kind environment | Complete |
+| M4B | Kubernetes backend deployment and end-to-end execution | Complete |
+| M4C | Manual worker scaling and queue distribution | Complete |
+| M4D | Pod self-healing, rolling restart, and in-flight recovery | Complete |
+| M5 | Live operations console, real metrics, load benchmarks, recovery visualization, affordable public demo | Next |
 
 ### M5 — Interactive Demo and Reliability Evidence
 
-Build a real-data-driven demonstration of ComputeGrid's queue-based execution and failure recovery.
+M5 is the next milestone. It will build a real-data-driven demonstration of
+ComputeGrid's queue-based execution and failure recovery with:
+
+- A live operations console.
+- Actual RabbitMQ queue and worker metrics.
+- Controlled load generation and reproducible throughput benchmarks.
+- Failure-recovery visualization based on persisted state.
+- An affordable public demo deployment with bounded resource and access costs.
 
 #### Queue and Worker Demo Console
 
@@ -969,6 +1336,9 @@ migrations/                 Alembic migrations
 
 scripts/
     doctor.sh               Read-only diagnostics
+    k8s-create-secret.sh    Ignored local credential generation
+
+k8s/                       Plain local Kubernetes manifests
 
 tests/
     unit/                   Unit tests
@@ -997,7 +1367,13 @@ The implemented platform includes:
 - Structured lifecycle logging.
 - Health and readiness probes.
 - Operational diagnostics.
+- A verified full-stack deployment on local kind Kubernetes.
+- Manual worker scaling with RabbitMQ competing-consumer distribution.
+- Kubernetes Pod self-healing and successful rolling restart behavior.
+- Verified in-flight worker failure recovery using durable leases and fencing.
 
-The next engineering goals are Kubernetes-based orchestration and a live demonstration of horizontal scaling, queue behavior, and fault recovery.
+The next engineering milestone is M5: a live operations console backed by
+actual RabbitMQ and worker data, controlled load generation, throughput
+benchmarks, failure-recovery visualization, and an affordable public demo.
 
 The central objective is to demonstrate **distributed-systems correctness, automated validation, and practical cloud operations through a small, explainable system**.

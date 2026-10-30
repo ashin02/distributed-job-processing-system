@@ -23,6 +23,7 @@ apps/web/coverage/
 
 # Local configuration and editor files
 .env
+.env.k8s
 .idea/
 .vscode/
 *.swp
