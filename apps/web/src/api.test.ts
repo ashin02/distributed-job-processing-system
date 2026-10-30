@@ -20,7 +20,11 @@ describe("API client", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    await submitJob("secret", { samples: 1000, seed: 42 }, "request-1");
+    await submitJob(
+      "secret",
+      { type: "monte_carlo_pi", parameters: { samples: 1000, seed: 42 } },
+      "request-1",
+    );
 
     expect(fetchMock).toHaveBeenCalledWith(
       "http://localhost:8000/v1/jobs",
@@ -36,6 +40,28 @@ describe("API client", () => {
     expect(JSON.parse(String(request.body))).toEqual({
       type: "monte_carlo_pi",
       parameters: { samples: 1000, seed: 42 },
+    });
+  });
+
+  it("submits a Weighted Max-Cut graph without changing its structure", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ job_id: "job-2", state: "ACCEPTED", status_url: "/v1/jobs/job-2" }),
+        { status: 202, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const graph = {
+      nodes: ["a", "b"],
+      edges: [{ source: "a", target: "b", weight: 3 }],
+    };
+
+    await submitJob("secret", { type: "weighted_max_cut", parameters: graph }, "request-2");
+
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(String(request.body))).toEqual({
+      type: "weighted_max_cut",
+      parameters: graph,
     });
   });
 

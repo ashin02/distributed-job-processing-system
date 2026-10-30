@@ -14,6 +14,23 @@ export interface MonteCarloPiParameters {
   seed: number;
 }
 
+export interface WeightedEdge {
+  source: string;
+  target: string;
+  weight: number;
+}
+
+export interface WeightedMaxCutParameters {
+  nodes: string[];
+  edges: WeightedEdge[];
+}
+
+export type JobType = "monte_carlo_pi" | "weighted_max_cut";
+
+export type JobCreateRequest =
+  | { type: "monte_carlo_pi"; parameters: MonteCarloPiParameters }
+  | { type: "weighted_max_cut"; parameters: WeightedMaxCutParameters };
+
 export interface JobAccepted {
   job_id: string;
   state: JobState;
@@ -22,7 +39,7 @@ export interface JobAccepted {
 
 export interface JobListItem {
   job_id: string;
-  type: "monte_carlo_pi";
+  type: JobType;
   state: JobState;
   created_at: string;
   updated_at: string;
@@ -50,7 +67,7 @@ export interface JobAttempt {
 
 export interface JobDetail {
   job_id: string;
-  type: "monte_carlo_pi";
+  type: JobType;
   parameters: Record<string, unknown>;
   state: JobState;
   result: Record<string, unknown> | null;
@@ -94,6 +111,12 @@ async function request<T>(path: string, token: string, init?: RequestInit): Prom
       const body = (await response.json()) as { detail?: unknown };
       if (typeof body.detail === "string") {
         message = body.detail;
+      } else if (Array.isArray(body.detail)) {
+        const validationMessages = body.detail.flatMap((item) => {
+          if (typeof item !== "object" || item === null || !("msg" in item)) return [];
+          return typeof item.msg === "string" ? [item.msg] : [];
+        });
+        if (validationMessages.length > 0) message = validationMessages.join("; ");
       }
     } catch {
       // Preserve the status-based fallback when the response is not JSON.
@@ -106,7 +129,7 @@ async function request<T>(path: string, token: string, init?: RequestInit): Prom
 
 export function submitJob(
   token: string,
-  parameters: MonteCarloPiParameters,
+  job: JobCreateRequest,
   idempotencyKey: string,
 ): Promise<JobAccepted> {
   return request<JobAccepted>("/v1/jobs", token, {
@@ -115,7 +138,7 @@ export function submitJob(
       "Content-Type": "application/json",
       "Idempotency-Key": idempotencyKey,
     },
-    body: JSON.stringify({ type: "monte_carlo_pi", parameters }),
+    body: JSON.stringify(job),
   });
 }
 

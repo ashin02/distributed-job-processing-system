@@ -103,11 +103,72 @@ def test_authentication_returns_configured_client(settings: Settings) -> None:
             "type": "monte_carlo_pi",
             "parameters": {"samples": 1000, "seed": 42, "unexpected": True},
         },
+        {
+            "type": "weighted_max_cut",
+            "parameters": {
+                "nodes": ["a", "a"],
+                "edges": [{"source": "a", "target": "a", "weight": 1}],
+            },
+        },
+        {
+            "type": "weighted_max_cut",
+            "parameters": {
+                "nodes": ["a", "b"],
+                "edges": [{"source": "a", "target": "missing", "weight": 1}],
+            },
+        },
+        {
+            "type": "weighted_max_cut",
+            "parameters": {
+                "nodes": ["a", "b"],
+                "edges": [
+                    {"source": "a", "target": "b", "weight": 1},
+                    {"source": "b", "target": "a", "weight": 2},
+                ],
+            },
+        },
+        {
+            "type": "weighted_max_cut",
+            "parameters": {"nodes": ["a", "b"], "edges": []},
+        },
+        {
+            "type": "weighted_max_cut",
+            "parameters": {
+                "nodes": [f"node-{index}" for index in range(17)],
+                "edges": [{"source": "node-0", "target": "node-1", "weight": 1}],
+            },
+        },
+        {
+            "type": "weighted_max_cut",
+            "parameters": {
+                "nodes": ["a", "b"],
+                "edges": [{"source": "a", "target": "b", "weight": 0}],
+            },
+        },
+        {"type": "weighted_max_cut", "parameters": {"samples": 1000, "seed": 42}},
     ],
 )
 def test_create_job_validates_payload(payload: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
         JobCreateRequest.model_validate(payload)
+
+
+def test_create_job_accepts_bounded_weighted_graph() -> None:
+    request = JobCreateRequest.model_validate(
+        {
+            "type": "weighted_max_cut",
+            "parameters": {
+                "nodes": ["a", "b", "c"],
+                "edges": [
+                    {"source": "a", "target": "b", "weight": 2.5},
+                    {"source": "b", "target": "c", "weight": 1},
+                ],
+            },
+        }
+    )
+
+    assert request.type.value == "weighted_max_cut"
+    assert request.parameters.model_dump(mode="json")["nodes"] == ["a", "b", "c"]
 
 
 def test_openapi_requires_idempotency_key() -> None:

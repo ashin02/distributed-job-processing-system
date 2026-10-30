@@ -3,11 +3,14 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   ApiError,
   getJob,
+  JobCreateRequest,
   JobDetail,
   JobListItem,
   JobState,
+  JobType,
   listJobs,
   submitJob,
+  WeightedMaxCutParameters,
 } from "./api";
 
 const PAGE_SIZE = 10;
@@ -15,6 +18,20 @@ const POLL_INTERVAL_MS = 5_000;
 const ACTIVE_POLL_INTERVAL_MS = 1_000;
 const TOKEN_STORAGE_KEY = "computegrid-development-token";
 const ACTIVE_JOB_STATES = new Set<JobState>(["ACCEPTED", "QUEUED", "RUNNING", "RETRY_WAIT"]);
+const DEFAULT_GRAPH = JSON.stringify(
+  {
+    nodes: ["a", "b", "c", "d"],
+    edges: [
+      { source: "a", target: "b", weight: 3 },
+      { source: "a", target: "c", weight: 1 },
+      { source: "b", target: "c", weight: 2 },
+      { source: "b", target: "d", weight: 4 },
+      { source: "c", target: "d", weight: 5 },
+    ],
+  },
+  null,
+  2,
+);
 
 type TimelineStageState = "complete" | "active" | "pending" | "failed";
 
@@ -56,6 +73,135 @@ function StatusBadge({ state }: { state: JobState }) {
 function JsonBlock({ value, empty }: { value: unknown; empty: string }) {
   if (value === null || value === undefined) return <p className="muted compact">{empty}</p>;
   return <pre>{JSON.stringify(value, null, 2)}</pre>;
+}
+
+function isWeightedGraph(value: unknown): value is WeightedMaxCutParameters {
+  if (typeof value !== "object" || value === null) return false;
+  const graph = value as Partial<WeightedMaxCutParameters>;
+  return Array.isArray(graph.nodes) && Array.isArray(graph.edges);
+}
+
+function displayJobType(type: JobType): string {
+  return type === "weighted_max_cut" ? "Weighted Max-Cut" : "Monte Carlo π";
+}
+
+function GraphView({
+  graph,
+  partition,
+}: {
+  graph: WeightedMaxCutParameters;
+  partition?: { side_a: string[]; side_b: string[] };
+}) {
+  const size = 280;
+  const center = size / 2;
+  const radius = 96;
+  const positions = new Map(
+    graph.nodes.map((node, index) => {
+      const angle = (2 * Math.PI * index) / graph.nodes.length - Math.PI / 2;
+      return [
+        node,
+        { x: center + radius * Math.cos(angle), y: center + radius * Math.sin(angle) },
+      ] as const;
+    }),
+  );
+  const sideB = new Set(partition?.side_b ?? []);
+
+  return (
+    <svg className="graph-view" viewBox={`0 0 ${size} ${size}`} role="img" aria-label="Weighted graph">
+      {graph.edges.map((edge) => {
+        const source = positions.get(edge.source);
+        const target = positions.get(edge.target);
+        if (!source || !target) return null;
+        const crossed = partition !== undefined && sideB.has(edge.source) !== sideB.has(edge.target);
+        return (
+          <g key={`${edge.source}-${edge.target}`} className={crossed ? "edge edge-cut" : "edge"}>
+            <line x1={source.x} y1={source.y} x2={target.x} y2={target.y} />
+            <text x={(source.x + target.x) / 2} y={(source.y + target.y) / 2}>{edge.weight}</text>
+          </g>
+        );
+      })}
+      {graph.nodes.map((node) => {
+        const position = positions.get(node)!;
+        const side = partition ? (sideB.has(node) ? "b" : "a") : "plain";
+        return (
+          <g key={node} className={`graph-node graph-node-${side}`}>
+            <circle cx={position.x} cy={position.y} r="21" />
+            <text x={position.x} y={position.y}>{node}</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function OptimizationResult({ job }: { job: JobDetail }) {
+  if (!isWeightedGraph(job.parameters)) return null;
+  const result = job.result;
+  const rawPartition = result?.partition;
+  const partition =
+    typeof rawPartition === "object" && rawPartition !== null
+      ? (rawPartition as { side_a: string[]; side_b: string[] })
+      : undefined;
+  const qubo = result?.qubo as
+    | {
+        linear?: Array<{ variable: string; bias: number }>;
+        quadratic?: Array<{ source: string; target: string; bias: number }>;
+        energy_relation?: string;
+      }
+    | undefined;
+  const solver = result?.solver as
+    | { name?: string; assignments_evaluated?: number; symmetry_breaking?: string }
+    | undefined;
+
+  return (
+    <section className="optimization-result" aria-labelledby="optimization-heading">
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">Classical optimization</p>
+          <h3 id="optimization-heading">Graph and optimal cut</h3>
+        </div>
+        {typeof result?.cut_weight === "number" && (
+          <div className="cut-score"><span>Optimal cut</span><strong>{result.cut_weight}</strong></div>
+        )}
+      </div>
+      <div className="optimization-grid">
+        <article className="graph-card">
+          <GraphView graph={job.parameters} partition={partition} />
+          {partition ? (
+            <div className="partition-legend">
+              <span><i className="side-a" />A · {partition.side_a.join(", ")}</span>
+              <span><i className="side-b" />B · {partition.side_b.join(", ")}</span>
+            </div>
+          ) : <p className="muted compact">The partition appears after execution.</p>}
+        </article>
+        <article className="qubo-card">
+          <div className="qubo-heading">
+            <h3>QUBO coefficients</h3>
+            <span>{qubo?.energy_relation ?? "Awaiting result"}</span>
+          </div>
+          {qubo?.linear && qubo.quadratic ? (
+            <div className="coefficient-groups">
+              <div><strong>Linear</strong>{qubo.linear.map((term) => (
+                <code key={term.variable}>Q[{term.variable}] = {term.bias}</code>
+              ))}</div>
+              <div><strong>Quadratic</strong>{qubo.quadratic.map((term) => (
+                <code key={`${term.source}-${term.target}`}>
+                  Q[{term.source},{term.target}] = {term.bias}
+                </code>
+              ))}</div>
+            </div>
+          ) : <p className="muted compact">The QUBO model appears after execution.</p>}
+        </article>
+      </div>
+      {solver && (
+        <div className="solver-meta">
+          <span><strong>Solver</strong>{solver.name ?? "—"}</span>
+          <span><strong>Assignments</strong>{solver.assignments_evaluated ?? "—"}</span>
+          <span><strong>Symmetry</strong>{solver.symmetry_breaking ?? "—"}</span>
+        </div>
+      )}
+    </section>
+  );
 }
 
 function ExecutionTimeline({ job }: { job: JobDetail }) {
@@ -120,8 +266,10 @@ export default function App() {
   const storedToken = sessionStorage.getItem(TOKEN_STORAGE_KEY) ?? "";
   const [tokenDraft, setTokenDraft] = useState(storedToken);
   const [token, setToken] = useState(storedToken);
+  const [jobType, setJobType] = useState<JobType>("monte_carlo_pi");
   const [samples, setSamples] = useState("1000000");
   const [seed, setSeed] = useState("42");
+  const [graphJson, setGraphJson] = useState(DEFAULT_GRAPH);
   const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID());
   const [jobs, setJobs] = useState<JobListItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -225,15 +373,31 @@ export default function App() {
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    const sampleCount = Number(samples);
-    const seedValue = Number(seed);
-    if (!Number.isInteger(sampleCount) || sampleCount < 1 || sampleCount > 10_000_000) {
-      setSubmitError("Samples must be an integer between 1 and 10,000,000.");
-      return;
-    }
-    if (!Number.isInteger(seedValue)) {
-      setSubmitError("Seed must be an integer.");
-      return;
+    let request: JobCreateRequest;
+    if (jobType === "monte_carlo_pi") {
+      const sampleCount = Number(samples);
+      const seedValue = Number(seed);
+      if (!Number.isInteger(sampleCount) || sampleCount < 1 || sampleCount > 10_000_000) {
+        setSubmitError("Samples must be an integer between 1 and 10,000,000.");
+        return;
+      }
+      if (!Number.isInteger(seedValue)) {
+        setSubmitError("Seed must be an integer.");
+        return;
+      }
+      request = {
+        type: "monte_carlo_pi",
+        parameters: { samples: sampleCount, seed: seedValue },
+      };
+    } else {
+      try {
+        const graph = JSON.parse(graphJson) as unknown;
+        if (!isWeightedGraph(graph)) throw new Error("Graph must contain nodes and edges arrays.");
+        request = { type: "weighted_max_cut", parameters: graph };
+      } catch (error) {
+        setSubmitError(errorMessage(error));
+        return;
+      }
     }
 
     setSubmitting(true);
@@ -242,7 +406,7 @@ export default function App() {
     try {
       const accepted = await submitJob(
         token,
-        { samples: sampleCount, seed: seedValue },
+        request,
         idempotencyKey,
       );
       setNotice(`Job ${accepted.job_id} was durably accepted for asynchronous execution.`);
@@ -292,10 +456,10 @@ export default function App() {
         <section className="intro panel">
           <div>
             <p className="eyebrow">Distributed execution</p>
-            <h2>Submit, track, and inspect deterministic compute jobs.</h2>
+            <h2>One console for reliable compute and classical optimization.</h2>
             <p className="muted">
-              Jobs move from durable acceptance through the RabbitMQ-backed worker pipeline.
-              Active jobs refresh automatically each second; optional polling keeps idle history current.
+              Submit deterministic numerical work or solve a bounded Weighted Max-Cut QUBO. Every
+              transition, retry, lease recovery, and durable result remains visible here.
             </p>
           </div>
           <div className="metric">
@@ -311,35 +475,63 @@ export default function App() {
             <div className="section-heading">
               <div>
                 <p className="eyebrow">New job</p>
-                <h2>Monte Carlo π</h2>
+                <h2>{displayJobType(jobType)}</h2>
               </div>
               <span className="execution-label">Async worker</span>
             </div>
             <form onSubmit={submit} className="stacked-form">
-              <label>
-                Samples
-                <input
-                  type="number"
-                  min="1"
-                  max="10000000"
-                  step="1"
-                  value={samples}
-                  onChange={(event) => setSamples(event.target.value)}
-                  disabled={!connected || submitting}
-                />
-                <span>1 to 10,000,000 deterministic samples</span>
-              </label>
-              <label>
-                Seed
-                <input
-                  type="number"
-                  step="1"
-                  value={seed}
-                  onChange={(event) => setSeed(event.target.value)}
-                  disabled={!connected || submitting}
-                />
-                <span>Integer used to reproduce the workload</span>
-              </label>
+              <div className="job-type-switch" aria-label="Job type">
+                <button
+                  type="button"
+                  aria-pressed={jobType === "monte_carlo_pi"}
+                  onClick={() => setJobType("monte_carlo_pi")}
+                >Monte Carlo π<span>Numerical sampling</span></button>
+                <button
+                  type="button"
+                  aria-pressed={jobType === "weighted_max_cut"}
+                  onClick={() => setJobType("weighted_max_cut")}
+                >Weighted Max-Cut<span>Exact QUBO solve</span></button>
+              </div>
+              {jobType === "monte_carlo_pi" ? (
+                <>
+                  <label>
+                    Samples
+                    <input
+                      type="number"
+                      min="1"
+                      max="10000000"
+                      step="1"
+                      value={samples}
+                      onChange={(event) => setSamples(event.target.value)}
+                      disabled={!connected || submitting}
+                    />
+                    <span>1 to 10,000,000 deterministic samples</span>
+                  </label>
+                  <label>
+                    Seed
+                    <input
+                      type="number"
+                      step="1"
+                      value={seed}
+                      onChange={(event) => setSeed(event.target.value)}
+                      disabled={!connected || submitting}
+                    />
+                    <span>Integer used to reproduce the workload</span>
+                  </label>
+                </>
+              ) : (
+                <label>
+                  Weighted graph (JSON)
+                  <textarea
+                    aria-label="Weighted graph JSON"
+                    value={graphJson}
+                    onChange={(event) => setGraphJson(event.target.value)}
+                    disabled={!connected || submitting}
+                    spellCheck={false}
+                  />
+                  <span>2–16 nodes, unique undirected edges, positive weights</span>
+                </label>
+              )}
               <div className="idempotency-note">
                 <span>Idempotency key</span>
                 <code title={idempotencyKey}>{idempotencyKey}</code>
@@ -395,7 +587,7 @@ export default function App() {
                       <tr key={job.job_id} className={job.job_id === selectedJobId ? "selected" : ""}>
                         <td>
                           <button className="job-link" onClick={() => setSelectedJobId(job.job_id)}>
-                            <strong>{job.type}</strong>
+                            <strong>{displayJobType(job.type)}</strong>
                             <span>{job.job_id.slice(0, 12)}…</span>
                           </button>
                         </td>
@@ -460,7 +652,8 @@ export default function App() {
                 <div><span>Completed</span><strong>{formatTimestamp(detail.completed_at)}</strong></div>
               </div>
               <ExecutionTimeline job={detail} />
-              <div className="detail-grid">
+              {detail.type === "weighted_max_cut" && <OptimizationResult job={detail} />}
+              <div className={`detail-grid ${detail.type === "weighted_max_cut" ? "detail-grid-compact" : ""}`}>
                 <article><h3>Parameters</h3><JsonBlock value={detail.parameters} empty="No parameters." /></article>
                 <article><h3>Result</h3><JsonBlock value={detail.result} empty="No result has been committed." /></article>
                 <article><h3>Error</h3><JsonBlock value={detail.error} empty="No error recorded." /></article>
@@ -472,15 +665,18 @@ export default function App() {
                 ) : (
                   <div className="table-wrap">
                     <table>
-                      <thead><tr><th>#</th><th>Status</th><th>Worker</th><th>Started</th><th>Finished</th></tr></thead>
+                      <thead><tr><th>#</th><th>Status</th><th>Worker</th><th>Started</th><th>Lease deadline</th><th>Finished</th><th>Duration</th><th>Failure</th></tr></thead>
                       <tbody>
                         {detail.attempts.map((attempt) => (
                           <tr key={attempt.attempt_id}>
                             <td>{attempt.attempt_number}</td>
-                            <td>{attempt.state}</td>
+                            <td><span className={`attempt-state attempt-${attempt.state.toLowerCase()}`}>{attempt.state}</span></td>
                             <td>{attempt.worker_id ?? "—"}</td>
                             <td>{formatTimestamp(attempt.started_at)}</td>
+                            <td>{formatTimestamp(attempt.lease_expires_at)}</td>
                             <td>{formatTimestamp(attempt.finished_at)}</td>
+                            <td>{formatDuration(attempt.started_at, attempt.finished_at) ?? "—"}</td>
+                            <td className="attempt-error">{attempt.error ? String(attempt.error.message ?? attempt.error.type ?? "Recorded") : "—"}</td>
                           </tr>
                         ))}
                       </tbody>

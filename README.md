@@ -2,13 +2,13 @@
 
 **A fault-tolerant Python job-processing service: REST API, durable queues, distributed workers, and Kubernetes autoscaling.**
 
-> **Status:** Planned portfolio project. This document specifies intended behavior, not completed work. Commands, dashboards, performance figures, and deployment links will be added or verified as implementation progresses.
+> **Status:** Milestone 2.5 is implemented for local development. Operability, Kubernetes, cloud deployment, and measured performance work remain on the roadmap.
 >
 > **Context:** Inspired by general engineering challenges in cloud-hosted compute services. This is an independent learning project, not a D-Wave product, implementation, or affiliation.
 
-## Current implementation: Milestone 2C
+## Current implementation: Milestone 2.5
 
-The repository contains the FastAPI application, PostgreSQL persistence, authenticated job APIs, a transactional outbox relay, RabbitMQ transport, Celery workers, and a React/TypeScript operations dashboard. New jobs and their outbox events are committed atomically, client-scoped idempotency is enforced by PostgreSQL, and `monte_carlo_pi` jobs execute asynchronously. The relay uses RabbitMQ publisher confirms before marking events published, while workers acknowledge late only after a terminal result, durable retry, or permanent failure is committed. Retryable execution failures use persisted retry limits and bounded exponential backoff with jitter. Every running attempt has a durable lease; the relay recovers expired attempts with a new fencing generation so late workers cannot overwrite recovered results. Autoscaling, caching, monitoring, and Kubernetes deployment remain deferred.
+The repository contains the FastAPI application, PostgreSQL persistence, authenticated job APIs, a transactional outbox relay, RabbitMQ transport, Celery workers, and a React/TypeScript operations dashboard. New jobs and their outbox events are committed atomically, client-scoped idempotency is enforced by PostgreSQL, and both deterministic `monte_carlo_pi` and bounded `weighted_max_cut` jobs execute asynchronously. Weighted Max-Cut graphs are converted to QUBO and solved by exact classical enumeration; this is an optimization demonstration, not a quantum computer emulator. The relay uses RabbitMQ publisher confirms before marking events published, while workers acknowledge late only after a terminal result, durable retry, or permanent failure is committed. Retryable execution failures use persisted retry limits and bounded exponential backoff with jitter. Every running attempt has a durable lease; the relay recovers expired attempts with a new fencing generation so late workers cannot overwrite recovered results. Autoscaling, caching, monitoring, and Kubernetes deployment remain deferred.
 
 ### Local setup
 
@@ -58,7 +58,7 @@ Start the Vite dashboard in another terminal:
 make web-dev
 ```
 
-Open `http://127.0.0.1:5173`, paste the development API token from `.env`, and connect. The token is retained only in browser session storage. The dashboard supports `monte_carlo_pi` submission, manual refresh, optional five-second history polling, and paginated job history. A selected active job refreshes automatically every second, and its execution timeline retains the persisted lifecycle timestamps, durations, attempts, result, and errors after completion. Set `VITE_API_BASE_URL` in `apps/web/.env` when the API is not available at `http://localhost:8000`.
+Open `http://127.0.0.1:5173`, paste the development API token from `.env`, and connect. The token is retained only in browser session storage. The dashboard supports both job types, manual refresh, optional five-second history polling, and paginated job history. Weighted Max-Cut results include an SVG graph, highlighted optimal partition, QUBO coefficients, and solver metadata. A selected active job refreshes automatically every second, and its execution timeline retains persisted lifecycle timestamps, durations, retries, abandoned attempts, results, and errors after completion. Set `VITE_API_BASE_URL` in `apps/web/.env` when the API is not available at `http://localhost:8000`.
 
 FastAPI allows the local Vite origins configured by `COMPUTEGRID_CORS_ORIGINS`. The value is a JSON array; keep production origins out of this development configuration.
 
@@ -86,6 +86,24 @@ curl --fail-with-body \
   -H "Authorization: Bearer $COMPUTEGRID_DEVELOPMENT_API_TOKEN" \
   'http://127.0.0.1:8000/v1/jobs?limit=20&offset=0'
 ```
+
+Submit a bounded Weighted Max-Cut graph with 2–16 uniquely labeled nodes, unique
+undirected edges, and positive finite edge weights:
+
+```bash
+curl --fail-with-body \
+  -X POST http://127.0.0.1:8000/v1/jobs \
+  -H "Authorization: Bearer $COMPUTEGRID_DEVELOPMENT_API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: max-cut-example-001' \
+  -d '{"type":"weighted_max_cut","parameters":{"nodes":["a","b","c"],"edges":[{"source":"a","target":"b","weight":2},{"source":"b","target":"c","weight":3},{"source":"a","target":"c","weight":1}]}}'
+```
+
+The solver minimizes the upper-triangular QUBO
+`-Σ w(u,v)(x_u + x_v - 2x_u x_v)`, whose energy is the negative cut weight.
+It fixes the first variable to one side to remove complemented duplicates and
+enumerates at most `2^15` assignments. Results include the optimal partition,
+cut weight, QUBO coefficients, and exact-solver metadata.
 
 `POST /v1/jobs` returns `202 Accepted` only after the job and `job.accepted` outbox event commit together. The relay later publishes the event and moves the job to `QUEUED`; a worker records a fenced attempt and moves it through `RUNNING` to `SUCCEEDED`, `RETRY_WAIT`, or `FAILED`. Due retry events return the job to `QUEUED` for the next numbered attempt. An identical retry with the same client-scoped `Idempotency-Key` returns the original job reference; a different validated payload with that key returns `409 Conflict`. `GET /v1/jobs/{job_id}` and the paginated `GET /v1/jobs` expose only jobs owned by the authenticated development client.
 
@@ -171,7 +189,7 @@ Build a small cloud computing service that can **accept, track, execute, retry, 
       CloudForge: CI/CD, ECR, EKS, infrastructure
 ```
 
-**Workload boundary:** The first version executes a fixed allowlist of deterministic compute tasks (e.g., numerical search or Monte Carlo estimation). It does **not** run arbitrary user-uploaded code or claim to emulate a quantum solver.
+**Workload boundary:** The service executes a fixed allowlist of deterministic compute and bounded classical optimization tasks. It does **not** run arbitrary user-uploaded code, connect to a QPU, or claim to emulate a quantum computer.
 
 ## Planned stack
 
@@ -344,8 +362,9 @@ Instrument traces for `API -> DB/outbox -> broker -> worker -> DB commit` with s
 
 ## Implementation milestones
 
-- [ ] **M1 — Python service:** FastAPI, request validation, SQLAlchemy models, Alembic, pytest, Docker Compose.
-- [ ] **M2 — Reliable execution:** RabbitMQ/Celery workers, transactional outbox, idempotency, retry, recovery and failure-injection tests.
+- [x] **M1 — Python service:** FastAPI, request validation, SQLAlchemy models, Alembic, pytest, Docker Compose.
+- [x] **M2 — Reliable execution:** RabbitMQ/Celery workers, transactional outbox, idempotency, retry, recovery and failure-injection tests.
+- [x] **M2.5 — Optimization and UI:** bounded exact Weighted Max-Cut/QUBO workload and polished operations dashboard.
 - [ ] **M3 — Operability:** Structured logging, OpenTelemetry, metrics, Redis cache/quota, operational runbooks.
 - [ ] **M4 — Kubernetes:** Helm chart, probes, KEDA, local `kind` tests, GitHub Actions and GitOps release.
 - [ ] **M5 — AWS deployment:** Run through CloudForge-managed EKS and supporting services; benchmark and document costs.

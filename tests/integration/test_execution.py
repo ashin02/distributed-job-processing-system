@@ -113,6 +113,46 @@ def test_execution_persists_attempt_and_result_idempotently(
         assert job.attempts[0].finished_at is not None
 
 
+def test_execution_dispatches_weighted_max_cut_job(
+    session_factory: SessionFactory,
+) -> None:
+    created = JobRepository(session_factory).create(
+        client_id="execution-client",
+        idempotency_key="weighted-max-cut",
+        request=JobCreateRequest.model_validate(
+            {
+                "type": "weighted_max_cut",
+                "parameters": {
+                    "nodes": ["a", "b", "c"],
+                    "edges": [
+                        {"source": "a", "target": "b", "weight": 2},
+                        {"source": "b", "target": "c", "weight": 3},
+                        {"source": "a", "target": "c", "weight": 1},
+                    ],
+                },
+            }
+        ),
+    )
+
+    assert (
+        execute_job(
+            created.job.id,
+            worker_id="optimization-worker",
+            session_factory=session_factory,
+        )
+        == ExecutionDisposition.COMPLETED
+    )
+
+    with session_factory() as session:
+        job = session.get(Job, created.job.id)
+        assert job is not None
+        assert job.state == JobState.SUCCEEDED
+        assert job.result is not None
+        assert job.result["cut_weight"] == 5.0
+        assert job.result["solver"]["optimal"] is True
+        assert job.result["qubo"]["energy_relation"] == "energy = -cut_weight"
+
+
 def test_execution_persists_terminal_failure(session_factory: SessionFactory) -> None:
     job_id = create_job(session_factory)
 

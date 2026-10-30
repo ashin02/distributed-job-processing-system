@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from computegrid_api.config import get_lease_settings, get_retry_settings
 from computegrid_api.db.models import AttemptState, Job, JobAttempt, JobState, OutboxEvent
 from computegrid_api.db.session import SessionFactory, get_session_factory, transaction
+from computegrid_api.jobs.optimization import weighted_max_cut
 
 type JobResult = dict[str, Any]
 type Computation = Callable[[dict[str, Any]], JobResult]
@@ -48,6 +49,7 @@ class JobClaim:
     attempt_id: UUID
     attempt_number: int
     fencing_token: int
+    job_type: str
     parameters: dict[str, Any]
 
 
@@ -115,13 +117,25 @@ def monte_carlo_pi(parameters: dict[str, Any]) -> JobResult:
     }
 
 
+def computation_for(job_type: str) -> Computation:
+    """Return the allowlisted implementation for one persisted job type."""
+    computations: dict[str, Computation] = {
+        "monte_carlo_pi": monte_carlo_pi,
+        "weighted_max_cut": weighted_max_cut,
+    }
+    try:
+        return computations[job_type]
+    except KeyError as error:
+        raise ValueError(f"unsupported persisted job type: {job_type}") from error
+
+
 def execute_job(
     job_id: UUID,
     *,
     expected_attempt_number: int = 1,
     worker_id: str,
     session_factory: SessionFactory | None = None,
-    computation: Computation = monte_carlo_pi,
+    computation: Computation | None = None,
     retry_policy: RetryPolicy | None = None,
     random_source: RandomSource = random,
     lease_duration: timedelta | None = None,
@@ -145,7 +159,8 @@ def execute_job(
         return claim
 
     try:
-        result = computation(claim.parameters)
+        active_computation = computation or computation_for(claim.job_type)
+        result = active_computation(claim.parameters)
     except Exception as error:
         return _finish_failure(
             job_id,
@@ -219,6 +234,7 @@ def _claim_job(
             attempt_id=attempt.id,
             attempt_number=expected_attempt_number,
             fencing_token=fencing_token,
+            job_type=job.job_type,
             parameters=dict(job.parameters),
         )
 

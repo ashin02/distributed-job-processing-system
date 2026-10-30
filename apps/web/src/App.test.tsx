@@ -59,7 +59,7 @@ describe("ComputeGrid dashboard", () => {
 
     expect(screen.getByText("Token required")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Submit job" })).toBeDisabled();
-    expect(screen.getByText(/RabbitMQ-backed worker pipeline/)).toBeInTheDocument();
+    expect(screen.getByText(/classical optimization/)).toBeInTheDocument();
   });
 
   it("submits a Monte Carlo job for asynchronous execution", async () => {
@@ -71,7 +71,7 @@ describe("ComputeGrid dashboard", () => {
     await waitFor(() => {
       expect(submitJob).toHaveBeenCalledWith(
         "test-token",
-        { samples: 1_000_000, seed: 42 },
+        { type: "monte_carlo_pi", parameters: { samples: 1_000_000, seed: 42 } },
         expect.any(String),
       );
     });
@@ -84,7 +84,7 @@ describe("ComputeGrid dashboard", () => {
     render(<App />);
     const user = await connect();
 
-    await user.click(await screen.findByRole("button", { name: /monte_carlo_pi/ }));
+    await user.click(await screen.findByRole("button", { name: /01JCOMPUTE/ }));
 
     expect(await screen.findByText(/No execution attempt/)).toBeInTheDocument();
     expect(screen.getByText(/"samples": 1000/)).toBeInTheDocument();
@@ -124,7 +124,7 @@ describe("ComputeGrid dashboard", () => {
     render(<App />);
     const user = await connect();
 
-    await user.click(await screen.findByRole("button", { name: /monte_carlo_pi/ }));
+    await user.click(await screen.findByRole("button", { name: /01JCOMPUTE/ }));
 
     expect(await screen.findByText(/"pi_estimate": 3.1412/)).toBeInTheDocument();
     expect(screen.getByText("worker-1")).toBeInTheDocument();
@@ -157,7 +157,7 @@ describe("ComputeGrid dashboard", () => {
     vi.mocked(getJob).mockResolvedValueOnce(queued).mockResolvedValue(succeeded);
     render(<App />);
     const user = await connect();
-    await user.click(await screen.findByRole("button", { name: /monte_carlo_pi/ }));
+    await user.click(await screen.findByRole("button", { name: /01JCOMPUTE/ }));
 
     expect(await screen.findByText(/Live · refreshes every 1s/)).toBeInTheDocument();
     await waitFor(() => expect(getJob).toHaveBeenCalledTimes(2), { timeout: 1_800 });
@@ -183,7 +183,7 @@ describe("ComputeGrid dashboard", () => {
     vi.mocked(getJob).mockResolvedValue(failed);
     render(<App />);
     const user = await connect();
-    await user.click(await screen.findByRole("button", { name: /monte_carlo_pi/ }));
+    await user.click(await screen.findByRole("button", { name: /01JCOMPUTE/ }));
 
     const timeline = await screen.findByRole("list", { name: "Execution timeline" });
     const stages = within(timeline).getAllByRole("listitem");
@@ -201,5 +201,83 @@ describe("ComputeGrid dashboard", () => {
     await connect();
 
     expect(await screen.findByRole("alert")).toHaveTextContent("API unavailable");
+  });
+
+  it("submits the example Weighted Max-Cut graph", async () => {
+    render(<App />);
+    const user = await connect();
+
+    await user.click(screen.getByRole("button", { name: /Weighted Max-Cut/ }));
+    await user.click(screen.getByRole("button", { name: "Submit job" }));
+
+    await waitFor(() => {
+      expect(submitJob).toHaveBeenCalledWith(
+        "test-token",
+        expect.objectContaining({
+          type: "weighted_max_cut",
+          parameters: expect.objectContaining({ nodes: ["a", "b", "c", "d"] }),
+        }),
+        expect.any(String),
+      );
+    });
+  });
+
+  it("renders the graph, partition, QUBO, and abandoned attempt", async () => {
+    const optimizationJob = {
+      ...job,
+      type: "weighted_max_cut" as const,
+      state: "SUCCEEDED" as const,
+    };
+    vi.mocked(listJobs).mockResolvedValue({
+      items: [optimizationJob], total: 1, limit: 10, offset: 0,
+    });
+    vi.mocked(getJob).mockResolvedValue({
+      ...detail,
+      ...optimizationJob,
+      parameters: {
+        nodes: ["a", "b"],
+        edges: [{ source: "a", target: "b", weight: 3 }],
+      },
+      result: {
+        cut_weight: 3,
+        partition: { side_a: ["a"], side_b: ["b"] },
+        qubo: {
+          linear: [{ variable: "a", bias: -3 }, { variable: "b", bias: -3 }],
+          quadratic: [{ source: "a", target: "b", bias: 6 }],
+          energy_relation: "energy = -cut_weight",
+        },
+        solver: {
+          name: "exact_classical_enumeration",
+          optimal: true,
+          assignments_evaluated: 2,
+          symmetry_breaking: "a fixed to side_a",
+        },
+      },
+      queued_at: "2026-10-28T20:00:00.100Z",
+      started_at: "2026-10-28T20:00:00.200Z",
+      completed_at: "2026-10-28T20:00:01Z",
+      attempts: [{
+        attempt_id: "attempt-abandoned",
+        attempt_number: 1,
+        state: "ABANDONED" as const,
+        worker_id: "worker-1",
+        lease_expires_at: null,
+        started_at: "2026-10-28T20:00:00.200Z",
+        finished_at: "2026-10-28T20:00:00.500Z",
+        error: { type: "WorkerLeaseExpired", message: "lease expired" },
+        created_at: "2026-10-28T20:00:00.200Z",
+        updated_at: "2026-10-28T20:00:00.500Z",
+      }],
+    });
+    render(<App />);
+    const user = await connect();
+    await user.click(await screen.findByRole("button", { name: /01JCOMPUTE/ }));
+
+    expect(await screen.findByRole("img", { name: "Weighted graph" })).toBeInTheDocument();
+    expect(screen.getByText("Optimal cut").parentElement).toHaveTextContent("3");
+    expect(screen.getByText("Q[a,b] = 6")).toBeInTheDocument();
+    expect(screen.getByText("exact_classical_enumeration")).toBeInTheDocument();
+    expect(screen.getByText("ABANDONED")).toBeInTheDocument();
+    expect(screen.getByText("lease expired")).toBeInTheDocument();
   });
 });
