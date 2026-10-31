@@ -26,6 +26,7 @@ apps/web/coverage/
 .env.*
 !.env.example
 !apps/web/.env.example
+!apps/web/.env.test
 .env.k8s
 .idea/
 .vscode/

@@ -1,12 +1,49 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, listJobs, submitJob } from "./api";
+import { API_BASE_URL, ApiError, getOperationsSummary, listJobs, submitJob } from "./api";
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
 describe("API client", () => {
+  it("maps the operations snapshot and preserves anonymous cookie credentials", async () => {
+    const payload = {
+      generated_at: "2026-10-30T20:00:00Z",
+      rabbitmq: {
+        status: "AVAILABLE", messages_ready: 5, messages_unacknowledged: 2,
+        consumer_count: 4, message: null,
+      },
+      workers: {
+        status: "AVAILABLE",
+        items: [{
+          worker_key: "worker-safe-a", label: "Worker 00AF",
+          availability: "AVAILABLE", activity: "BUSY",
+        }],
+        available: 1, idle: 0, busy: 1, message: null,
+      },
+      postgresql: { status: "AVAILABLE", job_counts: { RUNNING: 1 }, message: null },
+      visible_jobs_status: "AVAILABLE",
+      visible_jobs: [{
+        job_id: "a2cc9b84-8fe2-43b5-a596-3c166a344437",
+        job_type: "monte_carlo_pi", state: "RUNNING",
+        attempt_state: "RUNNING", worker_key: "worker-safe-a",
+      }],
+    };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(payload), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await getOperationsSummary(null);
+
+    expect(result).toEqual(payload);
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(request.credentials).toBe("include");
+    expect(request.headers).not.toHaveProperty("Authorization");
+  });
+
   it("uses credentialed cookies without exposing an authorization token", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ items: [], total: 0, limit: 10, offset: 0 }), {
@@ -19,7 +56,7 @@ describe("API client", () => {
     await listJobs(null, 10, 0);
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://localhost:8000/v1/jobs?limit=10&offset=0",
+      `${API_BASE_URL}/v1/jobs?limit=10&offset=0`,
       expect.any(Object),
     );
     const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
@@ -47,7 +84,7 @@ describe("API client", () => {
     );
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://localhost:8000/v1/jobs",
+      `${API_BASE_URL}/v1/jobs`,
       expect.objectContaining({
         method: "POST",
         headers: expect.objectContaining({
@@ -128,7 +165,7 @@ describe("API client", () => {
       new ApiError(401, "Invalid or missing API token"),
     );
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://localhost:8000/v1/jobs?limit=10&offset=20",
+      `${API_BASE_URL}/v1/jobs?limit=10&offset=20`,
       expect.any(Object),
     );
   });

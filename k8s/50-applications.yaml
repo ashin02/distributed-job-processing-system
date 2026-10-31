@@ -36,6 +36,9 @@ spec:
     spec:
       containers:
         - name: api
+          envFrom:
+            - configMapRef:
+                name: computegrid-config
           image: computegrid:local
           imagePullPolicy: IfNotPresent
           ports:
@@ -241,6 +244,9 @@ spec:
     spec:
       containers:
         - name: relay
+          envFrom:
+            - configMapRef:
+                name: computegrid-config
           image: computegrid:local
           imagePullPolicy: IfNotPresent
           command:

@@ -3,13 +3,15 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
-import { getJob, listJobs, submitJob } from "./api";
+vi.mock("./ComputeDemo", () => ({ ComputeDemo: () => null }));
+import { getJob, getOperationsSummary, listJobs, submitJob } from "./api";
 
 vi.mock("./api", async () => {
   const actual = await vi.importActual<typeof import("./api")>("./api");
   return {
     ...actual,
     getJob: vi.fn(),
+    getOperationsSummary: vi.fn(),
     listJobs: vi.fn(),
     submitJob: vi.fn(),
   };
@@ -36,12 +38,23 @@ const detail = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(listJobs).mockResolvedValue({ items: [], total: 0, limit: 10, offset: 0 });
-  vi.mocked(getJob).mockResolvedValue(detail);
-  vi.mocked(submitJob).mockResolvedValue({
+  vi.mocked(listJobs).mockReset().mockResolvedValue({ items: [], total: 0, limit: 10, offset: 0 });
+  vi.mocked(getJob).mockReset().mockResolvedValue(detail);
+  vi.mocked(submitJob).mockReset().mockResolvedValue({
     job_id: job.job_id,
     state: "ACCEPTED",
     status_url: `/v1/jobs/${job.job_id}`,
+  });
+  vi.mocked(getOperationsSummary).mockReset().mockResolvedValue({
+    generated_at: "2026-10-30T20:00:00Z",
+    rabbitmq: {
+      status: "AVAILABLE", messages_ready: 0, messages_unacknowledged: 0,
+      consumer_count: 0, message: null,
+    },
+    workers: { status: "AVAILABLE", items: [], message: null },
+    postgresql: { status: "AVAILABLE", job_counts: {}, message: null },
+    visible_jobs_status: "AVAILABLE",
+    visible_jobs: [],
   });
 });
 
@@ -49,7 +62,7 @@ async function connect() {
   const user = userEvent.setup();
   await user.type(screen.getByLabelText("Development API token"), "test-token");
   await user.click(screen.getByRole("button", { name: "Connect" }));
-  await waitFor(() => expect(listJobs).toHaveBeenCalledWith("test-token", 10, 0));
+  await waitFor(() => expect(listJobs).toHaveBeenCalledWith("test-token", 10, 0, expect.any(AbortSignal)));
   return user;
 }
 
@@ -60,7 +73,7 @@ describe("ComputeGrid dashboard", () => {
     expect(screen.getByText("Anonymous demo")).toBeInTheDocument();
     expect(screen.getByText("Private browser session")).toBeInTheDocument();
     expect(screen.queryByLabelText("Development API token")).not.toBeInTheDocument();
-    await waitFor(() => expect(listJobs).toHaveBeenCalledWith(null, 10, 0));
+    await waitFor(() => expect(listJobs).toHaveBeenCalledWith(null, 10, 0, expect.any(AbortSignal)));
     expect(screen.getByRole("button", { name: "Submit job" })).toBeEnabled();
   });
 
@@ -86,7 +99,7 @@ describe("ComputeGrid dashboard", () => {
       );
     });
     expect(await screen.findByText(/accepted for asynchronous execution/)).toBeInTheDocument();
-    expect(getJob).toHaveBeenCalledWith("test-token", job.job_id);
+    expect(getJob).toHaveBeenCalledWith("test-token", job.job_id, expect.any(AbortSignal));
   });
 
   it("loads a page and displays job detail", async () => {

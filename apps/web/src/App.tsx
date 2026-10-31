@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   ApiError,
@@ -14,6 +14,7 @@ import {
   submitJob,
   WeightedMaxCutParameters,
 } from "./api";
+import { OperationsConsole } from "./OperationsConsole";
 
 const PAGE_SIZE = 10;
 const POLL_INTERVAL_MS = 5_000;
@@ -493,6 +494,13 @@ export default function App({
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [polling, setPolling] = useState(false);
+  const [highlightedJobId, setHighlightedJobId] = useState<string | null>(null);
+  const listRequest = useRef<AbortController | null>(null);
+  const detailRequest = useRef<AbortController | null>(null);
+  useEffect(() => () => {
+    listRequest.current?.abort();
+    detailRequest.current?.abort();
+  }, [token, demoMode, offset, selectedJobId]);
 
   const connected = demoMode || token.length > 0;
   const authToken = demoMode ? null : token || null;
@@ -512,15 +520,19 @@ export default function App({
     async (targetOffset = offset, quiet = false) => {
       if (!connected) return;
       if (!quiet) setListLoading(true);
+      listRequest.current?.abort();
+      const controller = new AbortController();
+      listRequest.current = controller;
       setListError(null);
       try {
-        const page = await listJobs(authToken, PAGE_SIZE, targetOffset);
+        const page = await listJobs(authToken, PAGE_SIZE, targetOffset, controller.signal);
+        if (controller.signal.aborted) return;
         setJobs(page.items);
         setTotal(page.total);
       } catch (error) {
-        setListError(errorMessage(error));
+        if (!controller.signal.aborted) setListError(errorMessage(error));
       } finally {
-        if (!quiet) setListLoading(false);
+        if (!controller.signal.aborted) setListLoading(false);
       }
     },
     [authToken, connected, offset],
@@ -530,17 +542,32 @@ export default function App({
     async (jobId: string, quiet = false) => {
       if (!connected) return;
       if (!quiet) setDetailLoading(true);
+      detailRequest.current?.abort();
+      const controller = new AbortController();
+      detailRequest.current = controller;
       setDetailError(null);
       try {
-        setDetail(await getJob(authToken, jobId));
+        const next = await getJob(authToken, jobId, controller.signal);
+        if (!controller.signal.aborted) setDetail(next);
       } catch (error) {
-        setDetailError(errorMessage(error));
+        if (!controller.signal.aborted) setDetailError(errorMessage(error));
       } finally {
-        if (!quiet) setDetailLoading(false);
+        if (!controller.signal.aborted) setDetailLoading(false);
       }
     },
     [authToken, connected],
   );
+
+  const handleJobCompleted = useCallback((jobId: string) => {
+    setHighlightedJobId(jobId);
+    void loadJobs(offset, true);
+  }, [loadJobs, offset]);
+
+  useEffect(() => {
+    if (highlightedJobId === null) return undefined;
+    const timer = window.setTimeout(() => setHighlightedJobId(null), 1_800);
+    return () => window.clearTimeout(timer);
+  }, [highlightedJobId]);
 
   useEffect(() => {
     if (connected) void loadJobs();
@@ -825,6 +852,12 @@ export default function App({
           </section>
 
           <section className="panel jobs-panel">
+            <OperationsConsole
+              enabled={connected}
+              token={authToken}
+              onJobCompleted={handleJobCompleted}
+              onJobsChanged={() => void loadJobs(offset, true)}
+            />
             <div className="section-heading jobs-heading">
               <div>
                 <p className="eyebrow">Job ledger</p>
@@ -865,7 +898,13 @@ export default function App({
                   </thead>
                   <tbody>
                     {jobs.map((job) => (
-                      <tr key={job.job_id} className={job.job_id === selectedJobId ? "selected" : ""}>
+                      <tr
+                        key={job.job_id}
+                        className={[
+                          job.job_id === selectedJobId ? "selected" : "",
+                          job.job_id === highlightedJobId ? "recently-completed" : "",
+                        ].filter(Boolean).join(" ")}
+                      >
                         <td>
                           <button className="job-link" onClick={() => setSelectedJobId(job.job_id)}>
                             <strong>{displayJobType(job.type)}</strong>

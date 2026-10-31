@@ -10,8 +10,8 @@ import httpx
 import pytest
 from computegrid_api import operations as operations_module
 from computegrid_api.api.operations import get_operations_service
-from computegrid_api.config import BrokerSettings, Settings, get_settings
-from computegrid_api.db.models import JobState
+from computegrid_api.config import BrokerSettings, OperationsSettings, Settings, get_settings
+from computegrid_api.db.models import AttemptState, JobState
 from computegrid_api.db.session import SessionFactory
 from computegrid_api.demo_access import DemoAccessService, get_demo_access_service
 from computegrid_api.main import app
@@ -21,6 +21,7 @@ from computegrid_api.operations import (
     OperationsSummary,
     PostgreSQLSummary,
     RabbitMQSummary,
+    VisibleJobSummary,
     WorkerActivity,
     WorkersSummary,
     WorkerSummary,
@@ -32,6 +33,31 @@ from computegrid_api.operations import (
 from pydantic import SecretStr
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
+
+
+def test_fast_flow_does_not_inspect_broker_or_workers(monkeypatch: pytest.MonkeyPatch) -> None:
+    def forbidden(*args: object, **kwargs: object) -> None:
+        pytest.fail("Fast flow must not inspect broker, workers, or aggregate counts")
+
+    monkeypatch.setattr(operations_module, "rabbitmq_summary", forbidden)
+    monkeypatch.setattr(operations_module, "celery_summary", forbidden)
+    monkeypatch.setattr(operations_module, "postgresql_summary", forbidden)
+    seen: list[str | None] = []
+
+    def visible(factory: object, *, client_id: str | None,
+                timeout_seconds: float) -> tuple[DependencyStatus, list[VisibleJobSummary]]:
+        seen.append(client_id)
+        return DependencyStatus.AVAILABLE, []
+
+    monkeypatch.setattr(operations_module, "visitor_jobs_summary", visible)
+    service = OperationsService(
+        session_factory=cast(SessionFactory, None),
+        broker_settings=cast(BrokerSettings, None),
+        operations_settings=OperationsSettings(),
+    )
+    result = service.summary(client_id="visitor", flow_only=True)
+    assert seen == ["visitor"]
+    assert result.visible_jobs_status == DependencyStatus.AVAILABLE
 
 
 class FakeHTTPResponse:
@@ -53,7 +79,7 @@ class FakeHTTPResponse:
 class StubOperationsService:
     """Route dependency returning one deterministic snapshot."""
 
-    def summary(self) -> OperationsSummary:
+    def summary(self, *, client_id: str | None = None) -> OperationsSummary:
         return OperationsSummary(
             generated_at=datetime(2026, 10, 30, tzinfo=UTC),
             rabbitmq=RabbitMQSummary(
@@ -211,21 +237,43 @@ def test_postgresql_summary_reports_unavailable_without_raising() -> None:
 
 
 def test_public_operations_summary_redacts_worker_and_queue_identity() -> None:
-    summary = StubOperationsService().summary()
+    summary = StubOperationsService().summary().model_copy(
+        update={
+            "visible_jobs": [
+                VisibleJobSummary(
+                    job_id=UUID("a2cc9b84-8fe2-43b5-a596-3c166a344437"),
+                    job_type="monte_carlo_pi",
+                    state=JobState.RUNNING,
+                    attempt_state=AttemptState.RUNNING,
+                    worker_key="celery@worker-a",
+                )
+            ]
+        }
+    )
 
-    public = public_operations_summary(summary)
+    internal_worker_id = "celery@computegrid-worker-0.computegrid.svc"
+    unauthorized_job_id = UUID("11111111-1111-4111-8111-111111111111")
+    summary.workers.items[0].worker_id = internal_worker_id
+    summary.workers.items[0].current_job_id = unauthorized_job_id
+    summary.visible_jobs[0].worker_key = internal_worker_id
+
+    public = public_operations_summary(summary, worker_key_secret="s" * 32)
     body = public.model_dump(mode="json")
 
     assert body["rabbitmq"]["messages_ready"] == 2
     assert "queue_name" not in body["rabbitmq"]
-    assert body["workers"] == {
-        "status": "AVAILABLE",
-        "available": 1,
-        "idle": 1,
-        "busy": 0,
-        "message": None,
-    }
-    assert "items" not in body["workers"]
+    assert body["workers"]["status"] == "AVAILABLE"
+    assert body["workers"]["available"] == 1
+    assert body["workers"]["idle"] == 1
+    assert body["workers"]["busy"] == 0
+    assert body["workers"]["items"][0]["label"].startswith("Worker ")
+    assert body["workers"]["items"][0]["worker_key"].startswith("worker-")
+    assert body["workers"]["items"][0]["availability"] == "AVAILABLE"
+    assert body["workers"]["items"][0]["activity"] == "IDLE"
+    assert body["visible_jobs"][0]["worker_key"] == body["workers"]["items"][0]["worker_key"]
+    assert internal_worker_id not in str(body)
+    assert "computegrid-worker-0" not in str(body)
+    assert str(unauthorized_job_id) not in str(body)
 
 
 @pytest.mark.anyio
@@ -235,6 +283,7 @@ async def test_operations_summary_requires_authentication(token: str | None) -> 
         database_url="postgresql+psycopg://unused",
         development_api_token=SecretStr("test-token"),
         development_client_id="unit-client",
+        demo_mode_enabled=False,
     )
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_operations_service] = lambda: cast(
@@ -315,4 +364,10 @@ async def test_anonymous_operations_summary_exposes_only_aggregate_metrics() -> 
     assert body["rabbitmq"]["consumer_count"] == 4
     assert "queue_name" not in body["rabbitmq"]
     assert body["workers"]["available"] == 1
-    assert "items" not in body["workers"]
+    assert len(body["workers"]["items"]) == 1
+    assert body["workers"]["items"][0]["label"].startswith("Worker ")
+    assert body["workers"]["items"][0]["worker_key"].startswith("worker-")
+    assert body["workers"]["items"][0]["availability"] == "AVAILABLE"
+    assert body["workers"]["items"][0]["activity"] == "IDLE"
+    assert "worker_id" not in body["workers"]["items"][0]
+    assert "current_job_id" not in body["workers"]["items"][0]

@@ -3,13 +3,33 @@
 
 **A fault-tolerant distributed job-processing platform built with Python, FastAPI, PostgreSQL, RabbitMQ, Celery, and React.**
 
-> **Status (October 2026):** M1–M4D and M5A-1 are complete and verified. M5A-2 anonymous demo access is implemented and awaiting local verification. ComputeGrid has been deployed with Docker Compose and on a local single-node Kubernetes cluster using kind. Verified capabilities include distributed execution, durable retries, worker crash recovery, horizontal worker scaling, Kubernetes self-healing, rolling restarts, in-flight worker failure recovery, and an authenticated backend observability API backed by live RabbitMQ, Celery, and PostgreSQL data. Backend and frontend CI pass on GitHub Actions.
+> **Status (October 2026):** M1–M4D and M5A-1/M5A-2 are complete and verified. M5B's animated live operations console is implemented and awaiting local verification. ComputeGrid has been deployed with Docker Compose and on a local single-node Kubernetes cluster using kind. Verified capabilities include distributed execution, durable retries, worker crash recovery, horizontal worker scaling, Kubernetes self-healing, rolling restarts, in-flight worker failure recovery, authenticated observability, and isolated anonymous demo access. Backend and frontend CI pass on GitHub Actions.
 >
-> **Next:** Verify M5A-2, then continue the later M5 live operations console, controlled load generation, reproducible performance experiments, failure visualization, and affordable public demonstration. AWS EKS remains an optional learning exercise rather than a requirement for public hosting.
+> **Next:** Verify M5C Computational Load Demo (implemented, verification pending), then consider M5D failure controls and public-demo deployment. AWS EKS remains optional.
 >
 > **Project context:** ComputeGrid is an independent portfolio project inspired by the reliability and infrastructure challenges of cloud compute services. It is not a D-Wave product, an implementation of D-Wave's Hybrid Solver Service, or affiliated with D-Wave. All current workloads execute on classical CPUs; no QPU or external quantum solver is used.
 
 ## 1. Purpose
+
+The live operations console uses two independent HTTP polling loops. Visitor job
+states and persisted attempt-to-worker assignments refresh approximately every
+500ms through `/v1/operations/summary?flow_only=true`. This bounded, session-scoped
+database read performs no Celery inspection, RabbitMQ calls, or global count scan.
+Anonymous flow reads have a separate 150-request/minute allowance and retain the
+existing global anonymous request budget and opaque worker identifiers.
+
+Worker discovery, RabbitMQ queue counters, and aggregate counts use the normal
+summary endpoint, with three seconds between completed requests. Those metrics
+can therefore lag the job blocks; worker-wide idle/busy status remains the last
+inspection result unless a visitor's persisted running assignment confirms busy.
+Demo progress refreshes once per second while feeding or draining, and every
+three seconds when idle. Recent Jobs refreshes on progress changes; selected-job
+details retain their one-second refresh. No execution or admission settings change.
+
+Flow requests are serialized, abort on cleanup, and reject late replies after
+session changes. Slow monitoring responses cannot replace newer flow state.
+Existing CSS transitions animate committed state immediately; polling may skip
+short-lived states, and the UI does not invent intermediate transitions.
 
 ComputeGrid accepts computational jobs through a REST API, persists their state, dispatches them to background workers, and recovers safely from failures.
 
@@ -1242,14 +1262,15 @@ transitions prevent more than one authoritative result.
 | M4D | Pod self-healing, rolling restart, and in-flight recovery | Complete |
 | M5 | Live operations console, real metrics, load benchmarks, recovery visualization, affordable public demo | In progress |
 | M5A-1 | Authenticated backend observability API | Complete |
-| M5A-2 | Isolated anonymous demo access and abuse protections | Implemented; verification pending |
+| M5A-2 | Isolated anonymous demo access and abuse protections | Complete |
+| M5B | Animated live Queue → Worker → Completion console | Implemented; verification pending |
+| M5C | Backend-controlled Computational Load Demo | Implemented; verification pending |
 
 ### M5 — Interactive Demo and Reliability Evidence
 
-M5 is in progress. M5A-1's authenticated backend operations summary is complete
-and verified. M5A-2 is implemented and awaiting local verification; later work
-will build a real-data-driven demonstration of ComputeGrid's queue-based
-execution and failure recovery with:
+M5 is in progress. M5A-1 and M5A-2 are complete and verified. M5B is implemented
+and awaiting local verification; later work will add controlled load,
+browser-triggered failure demonstrations, and performance evidence.
 
 - A live operations console.
 - Actual RabbitMQ queue and worker metrics.
@@ -1257,25 +1278,54 @@ execution and failure recovery with:
 - Failure-recovery visualization based on persisted state.
 - An affordable public demo deployment with bounded resource and access costs.
 
-#### Queue and Worker Demo Console
+#### M5B Animated Live Operations Console
 
-Extend the existing React dashboard without removing the New Job panel.
+The dashboard places a compact execution flow immediately above Recent Jobs:
 
-Place a compact operational visualization above Recent Jobs.
+```text
+visitor-visible queued Jobs → actual discovered Workers → completion
+```
 
-Show:
+RabbitMQ provides real ready, unacknowledged, consumer, and availability
+metrics. Celery inspection provides the discovered worker set and its actual
+`IDLE`, `BUSY`, `ONLINE`, or `UNKNOWN` state. PostgreSQL provides authoritative
+job-state counts plus the current visitor's persisted Jobs, latest attempt
+state, and durable worker claim. Queue depth remains a system-wide aggregate;
+the UI never converts that count into invented Job blocks.
 
-- RabbitMQ queue depth.
-- Ready and unacknowledged messages.
-- Worker availability and current assignments.
-- Job movement from queued to running to completion.
-- Attempt history and recovery events.
+Job blocks use stable Job IDs and restrained semantic borders: accepted/queued
+is blue, running and retry wait are amber, succeeded is green, failed/cancelled
+is red, and an abandoned latest attempt is marked interrupted. At most six
+blocks appear in a lane, with a real `+N more` count for additional tracked
+Jobs. Four cards appear in one desktop row when four workers are actually
+discovered; no placeholder workers are fabricated.
 
-Use four worker cards with a subtle rabbit-inspired visual design.
+Observed state changes animate through the Queue, Worker, Retry Wait, and
+Completion areas. A `RUNNING → RETRY_WAIT` observation moves the same block out
+of its persisted worker and marks an abandoned attempt as interrupted. It does
+not return to Queue until PostgreSQL reports `QUEUED`, and it moves to a new
+worker only after a new persisted running claim identifies that worker.
+Terminal transitions briefly move downward toward Recent Jobs and highlight
+the existing ledger row without inserting a duplicate.
 
-The interface should remain professional and consistent with the existing dashboard.
+The console polls approximately every three seconds with one request in flight
+at a time. A failed refresh preserves the last successful snapshot and marks it
+stale. Partial RabbitMQ, Celery, or PostgreSQL failures remain visibly distinct
+from valid zero counts. Polling and pending requests are cleaned up on unmount.
+View Transitions provide short layout movement when supported; CSS fallbacks
+remain functional, and `prefers-reduced-motion` disables motion.
 
-**All displayed operational state must be derived from actual backend data, not a frontend-only simulation.**
+Developer bearer access can correlate authorized Jobs with raw worker records.
+Anonymous sessions receive only their own Jobs and stable HMAC-derived worker
+keys and labels. Raw Celery names, Pod names, other visitors' Job IDs, and
+restricted infrastructure details are never returned to anonymous clients. If
+a persisted running Job cannot be matched to a currently discovered worker, it
+appears in an explicit unassigned execution area rather than on a guessed card.
+
+Polling can miss transitions shorter than the refresh interval. The UI animates
+only consecutive states it actually observes; it does not synthesize skipped
+Queue, retry, failure, or completion events. Docker Compose and Kubernetes use
+the same API and correlation rules.
 
 #### M5A-2 Anonymous Demo Access
 
@@ -1323,7 +1373,7 @@ limits reduce abuse but do not replace an edge proxy, network-level denial-of-
 service protection, moderation, retention policies, or production identity
 management.
 
-Pending local verification for this milestone:
+Local verification commands for anonymous access and the M5B console:
 
 ```bash
 make backend-check
@@ -1332,19 +1382,125 @@ make test-all
 make web-check
 ```
 
-#### Controlled Load Generator
+Vitest uses the committed `apps/web/.env.test`, which fixes the test API URL at
+`http://localhost:8000` and disables Demo Mode. Local Kubernetes or demo values
+in `apps/web/.env.local` therefore continue to affect development only, while
+tests that need anonymous mode enable it explicitly through component inputs.
 
-Provide a demo control that submits jobs for a bounded 20-second period.
+#### M5C — Computational Load Demo
 
-Support three submission rates:
+`Run Compute Demo` starts one server-controlled feed in the existing operations
+console. The four editable manual forms retain their small examples unchanged.
+The feed submits real jobs for up to 20 seconds; job execution may continue
+afterward. The UI distinguishes submission countdown, feed complete/processing,
+and execution complete (all jobs terminal, including failures).
 
-- Low
-- Medium
-- High
+`POST /v1/demo-runs` requires the existing authenticated client/session and an
+`Idempotency-Key`. It accepts no workload configuration. `GET /v1/demo-runs/latest`
+restores the visitor's latest run after refresh; `GET /v1/demo-runs/{id}` returns
+only owned runs. Progress reports database-derived submitted and per-state
+counts, start/deadline timestamps, remaining feed time, and throttling reasons.
 
-The rates should be explicitly defined, bounded, and documented.
+The existing outbox relay advances PostgreSQL feed cursors. Under the same
+advisory admission lock used for anonymous jobs, it atomically writes each job,
+its normal acceptance outbox event, and the feed cursor. IDs and idempotency
+keys derive from run ID and sequence. Duplicate starts return the same run;
+concurrent relays cannot duplicate a sequence. Restarting resumes only before
+the persisted deadline, without a catch-up burst or deadline extension. API or
+browser restarts do not own scheduling. No separate queue, workers, or timers
+inside workers are introduced. Apply migrations through
+`0005_demo_run_bounds` before restarting the API and relay.
 
-Demonstrate how queue depth and waiting time change under different arrival rates.
+Presets rotate deterministically through:
+
+- Monte Carlo π: 10,000,000 samples, seed 42.
+- Max-Cut: dense 18-node graph, 153 deterministic positive-weight edges.
+- BQM: 18 binary variables, 18 linear biases, and 153 signed interactions.
+- Restricted CQM: 18 binary variables, an 18-coefficient linear objective, and 18
+  resource constraints with 18 coefficients each.
+
+These use the existing solvers and validation maxima. Enumeration checks at
+most 262,144 assignments (Max-Cut evaluates one representative per complement).
+No sleep or artificial computation is added. Some models may complete in less
+than a second. A 2–5 second runtime or queue buildup is **not guaranteed**;
+measure on the target CPU, with the intended worker concurrency and limits.
+
+The computational feed submits at most one job every 0.5 seconds for the
+unchanged 20-second window, with a maximum of 40 jobs per run. Only one feed
+may be active, and the global active-job capacity remains 40. The relay polls
+at the same 0.5-second cadence, so each due tick can admit one job without
+catch-up bursts.
+
+Settings use the `COMPUTEGRID_COMPUTE_DEMO_` prefix and are wired into Compose
+and the kind API/relay through the ConfigMap:
+
+| Suffix | Default | Purpose |
+| --- | --- | --- |
+| `INTERVAL_SECONDS` | 2 | At most one submission per due feed tick; minimum 1 |
+| `MAX_JOBS` | 10 | Per-run ceiling, hard maximum 20 |
+| `MAX_FEEDS` | 1 | Simultaneous global feeds, hard maximum 4 |
+| `ACTIVE_CAPACITY` | 40 | Stop adding jobs while system-wide nonterminal count reaches cap |
+| `RETAINED_CAPACITY` | 5000 | Stop admission when retained job count reaches cap |
+| `COOLDOWN_SECONDS` | 120 | Per-client persisted start cooldown; minimum 20 |
+| `SAMPLES` | 10000000 | Monte Carlo preset size, existing maximum 10 million |
+| `VARIABLES` | 16 | Optimization preset size, range 4–16 |
+
+Rate limits additionally bound starts to five/minute per client and reads to
+60/minute, with 240/minute shared demo endpoint requests. Limits apply to
+developers as well as anonymous sessions. Browser POSTs require an allowed
+Origin; anonymous POSTs without Origin are rejected. Cross-visitor reads return
+404. Generated jobs retain the requester's client ID and use the existing M5B
+privacy/correlation rules. Capacity throttling skips a tick and records why;
+the deadline does not move. Historical throttling reasons remain visible.
+Retained run records share the same numeric ceiling (counted independently),
+so failed/empty feeds cannot grow metadata without bound. Completed jobs and
+run records are not automatically deleted. Ordinary anonymous manual job
+limits remain in force; only server-selected presets use separate admission.
+
+Manual verification (not executed during implementation):
+
+```bash
+make dev-deps-up
+make migrate
+make test-all
+make check
+make dev-up
+make web-dev
+```
+
+For kind, update desired non-secret settings in `k8s/10-configmap.yaml`, then:
+
+```bash
+make k8s-image
+make k8s-configure
+make k8s-migrate
+make k8s-apps
+make k8s-port-forward
+VITE_API_BASE_URL=http://localhost:8001 VITE_DEMO_MODE=true npm --prefix apps/web run dev
+```
+
+Click once, refresh mid-feed, and confirm submitted counts resume from storage.
+After the deadline confirm counts stop increasing while jobs continue to
+complete. A second browser session must not see the first session's run or jobs.
+Observe real RabbitMQ metrics and worker assignments; fast states can still be
+missed by polling. The run display polls every three seconds; the local
+countdown interpolates the server's remaining time and does not submit jobs.
+API outages retain last known progress and show an error.
+
+Benchmark each actual preset once without database or broker dependencies:
+
+```bash
+.venv/bin/python scripts/benchmark_compute_demo.py
+```
+
+Repeat manually on the target hardware and record CPU, worker concurrency,
+container CPU/memory limits, preset sizes, wall times, and lease duration. Also
+measure persisted attempt start/finish durations under an actual feed. Keep
+worst-case execution comfortably below the normal 300-second lease. Tune
+`SAMPLES`/`VARIABLES` downward if necessary, then tune interval and job caps for
+the measured capacity. Never raise enumeration beyond the current solver
+bounds just to make an animation visible. Public deployment requires this
+calibration and remains out of scope.
 
 #### Worker Failure Demonstration
 
@@ -1518,10 +1674,10 @@ The implemented platform includes:
 - Kubernetes Pod self-healing and successful rolling restart behavior.
 - Verified in-flight worker failure recovery using durable leases and fencing.
 
-M5A-2 anonymous demo access is implemented and awaiting local verification.
-The completed M5A-1 API supplies real RabbitMQ, Celery worker, and PostgreSQL
-data for the later live operations console, controlled load generation,
-throughput benchmarks, failure-recovery visualization, and affordable public
-demo. The overall M5 milestone remains in progress.
+M5A-1 and M5A-2 are complete and verified. M5B's animated console is
+implemented and awaiting local verification, using real RabbitMQ, Celery
+worker, persisted attempt, and PostgreSQL job data. M5C computational feeds
+are implemented pending verification. Later failure controls, throughput benchmarks, and an affordable
+public demo remain future work. The overall M5 milestone remains in progress.
 
 The central objective is to demonstrate **distributed-systems correctness, automated validation, and practical cloud operations through a small, explainable system**.

@@ -100,6 +100,8 @@ def test_create_job_returns_accepted(
 def test_authentication_rejects_missing_or_invalid_token(
     credentials: str | None, settings: Settings
 ) -> None:
+    settings = settings.model_copy(update={"demo_mode_enabled": False})
+
     authorization = (
         None
         if credentials is None
@@ -154,7 +156,10 @@ def test_tampered_anonymous_cookie_gets_a_new_identity() -> None:
     first_response = Response()
     first = authenticate_client(None, settings, http_request(), first_response)
     cookie = first_response.headers["set-cookie"].split(";", 1)[0]
-    tampered = f"{cookie[:-1]}x"
+
+    name, value = cookie.split("=", 1)
+    replacement_char = "A" if value[0] != "A" else "B"
+    tampered = f"{name}={replacement_char}{value[1:]}"
 
     replacement_response = Response()
     replacement = authenticate_client(
@@ -245,7 +250,7 @@ def test_anonymous_workload_limit_is_stricter_than_developer_limit(
         {
             "type": "weighted_max_cut",
             "parameters": {
-                "nodes": [f"node-{index}" for index in range(17)],
+                "nodes": [f"node-{index}" for index in range(19)],
                 "edges": [{"source": "node-0", "target": "node-1", "weight": 1}],
             },
         },
@@ -261,7 +266,7 @@ def test_anonymous_workload_limit_is_stricter_than_developer_limit(
             "type": "bqm",
             "parameters": {
                 "vartype": "BINARY",
-                "variables": [f"x{index}" for index in range(17)],
+                "variables": [f"x{index}" for index in range(19)],
                 "linear": {},
                 "quadratic": [],
             },
@@ -308,7 +313,7 @@ def test_anonymous_workload_limit_is_stricter_than_developer_limit(
         {
             "type": "cqm",
             "parameters": {
-                "variables": [f"x{index}" for index in range(17)],
+                "variables": [f"x{index}" for index in range(19)],
                 "objective": {"sense": "minimize", "linear": {}},
                 "constraints": [
                     {"name": "limit", "linear": {"x0": 1}, "sense": "<=", "rhs": 1}

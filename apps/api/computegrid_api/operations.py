@@ -7,6 +7,8 @@ import re
 from base64 import b64encode
 from datetime import UTC, datetime
 from enum import StrEnum
+from hashlib import sha256
+from hmac import new as new_hmac
 from json import JSONDecodeError
 from typing import Any
 from urllib.error import HTTPError
@@ -15,12 +17,13 @@ from urllib.request import Request, urlopen
 from uuid import UUID
 
 from celery import Celery
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import load_only, selectinload
 
 from computegrid_api.config import BrokerSettings, OperationsSettings
-from computegrid_api.db.models import Job, JobState
+from computegrid_api.db.models import AttemptState, Job, JobAttempt, JobState
 from computegrid_api.db.session import SessionFactory
 
 _UUID_PATTERN = re.compile(
@@ -81,6 +84,16 @@ class PostgreSQLSummary(BaseModel):
     message: str | None = None
 
 
+class VisibleJobSummary(BaseModel):
+    """One caller-visible job and its latest persisted execution evidence."""
+
+    job_id: UUID
+    job_type: str
+    state: JobState
+    attempt_state: AttemptState | None = None
+    worker_key: str | None = None
+
+
 class OperationsSummary(BaseModel):
     """Point-in-time, read-only operational snapshot."""
 
@@ -88,6 +101,8 @@ class OperationsSummary(BaseModel):
     rabbitmq: RabbitMQSummary
     workers: WorkersSummary
     postgresql: PostgreSQLSummary
+    visible_jobs_status: DependencyStatus = DependencyStatus.AVAILABLE
+    visible_jobs: list[VisibleJobSummary] = Field(default_factory=list)
 
 
 class PublicRabbitMQSummary(BaseModel):
@@ -100,10 +115,20 @@ class PublicRabbitMQSummary(BaseModel):
     message: str | None = None
 
 
+class PublicWorkerSummary(BaseModel):
+    """One discovered worker with an anonymous-safe display label."""
+
+    label: str
+    worker_key: str
+    availability: DependencyStatus
+    activity: WorkerActivity
+
+
 class PublicWorkersSummary(BaseModel):
     """Aggregate worker capacity without worker or active-job identities."""
 
     status: DependencyStatus
+    items: list[PublicWorkerSummary]
     available: int
     idle: int
     busy: int
@@ -117,9 +142,20 @@ class PublicOperationsSummary(BaseModel):
     rabbitmq: PublicRabbitMQSummary
     workers: PublicWorkersSummary
     postgresql: PostgreSQLSummary
+    visible_jobs_status: DependencyStatus
+    visible_jobs: list[VisibleJobSummary]
 
 
-def public_operations_summary(summary: OperationsSummary) -> PublicOperationsSummary:
+def _public_worker_key(worker_id: str, secret: str) -> str:
+    digest = new_hmac(secret.encode(), f"worker:{worker_id}".encode(), sha256).hexdigest()
+    return f"worker-{digest[:12]}"
+
+
+def public_operations_summary(
+    summary: OperationsSummary,
+    *,
+    worker_key_secret: str,
+) -> PublicOperationsSummary:
     """Remove infrastructure and cross-visitor identifiers from a snapshot."""
     available = sum(
         worker.availability == DependencyStatus.AVAILABLE for worker in summary.workers.items
@@ -137,12 +173,33 @@ def public_operations_summary(summary: OperationsSummary) -> PublicOperationsSum
         ),
         workers=PublicWorkersSummary(
             status=summary.workers.status,
+            items=[
+                PublicWorkerSummary(
+                    label=f"Worker {worker_key[-4:].upper()}",
+                    worker_key=worker_key,
+                    availability=worker.availability,
+                    activity=worker.activity,
+                )
+                for worker in summary.workers.items
+                for worker_key in [_public_worker_key(worker.worker_id, worker_key_secret)]
+            ],
             available=available,
             idle=idle,
             busy=busy,
             message=summary.workers.message,
         ),
         postgresql=summary.postgresql,
+        visible_jobs_status=summary.visible_jobs_status,
+        visible_jobs=[
+            job.model_copy(
+                update={
+                    "worker_key": _public_worker_key(job.worker_key, worker_key_secret)
+                    if job.worker_key is not None
+                    else None
+                }
+            )
+            for job in summary.visible_jobs
+        ],
     )
 
 
@@ -160,22 +217,91 @@ class OperationsService:
         self._broker_settings = broker_settings
         self._operations_settings = operations_settings
 
-    def summary(self) -> OperationsSummary:
+    def summary(
+            self,
+            *,
+            client_id: str | None = None,
+            flow_only: bool = False,
+        ) -> OperationsSummary:
         """Return fresh data without mutating any dependency."""
         timeout = self._operations_settings.operations_timeout_seconds
+        visible_jobs_status, visible_jobs = visitor_jobs_summary(
+            self._session_factory,
+            client_id=client_id,
+            timeout_seconds=timeout,
+        )
         return OperationsSummary(
             generated_at=datetime.now(UTC),
-            rabbitmq=rabbitmq_summary(
+            rabbitmq=RabbitMQSummary(status=DependencyStatus.UNKNOWN, queue_name="")
+            if flow_only else rabbitmq_summary(
                 self._broker_settings,
                 self._operations_settings.rabbitmq_management_url,
                 timeout=timeout,
             ),
-            workers=celery_summary(self._broker_settings, timeout=timeout),
-            postgresql=postgresql_summary(
+            workers=WorkersSummary(status=DependencyStatus.UNKNOWN, items=[])
+            if flow_only else celery_summary(self._broker_settings, timeout=timeout),
+            postgresql=PostgreSQLSummary(status=DependencyStatus.UNKNOWN, job_counts=None)
+            if flow_only else postgresql_summary(
                 self._session_factory,
                 timeout_seconds=timeout,
             ),
+            visible_jobs_status=visible_jobs_status,
+            visible_jobs=visible_jobs,
         )
+
+
+def visitor_jobs_summary(
+    session_factory: SessionFactory,
+    *,
+    client_id: str | None,
+    limit: int = 100,
+    timeout_seconds: float = 2.0,
+) -> tuple[DependencyStatus, list[VisibleJobSummary]]:
+    """Return only one authorized client's jobs with persisted attempt correlation."""
+    if client_id is None:
+        return DependencyStatus.AVAILABLE, []
+    statement = (
+        select(Job)
+        .options(
+            load_only(Job.id, Job.job_type, Job.state),
+            selectinload(Job.attempts).load_only(
+                JobAttempt.id, JobAttempt.state, JobAttempt.worker_id,
+            ),
+        )
+        .where(Job.client_id == client_id)
+        .order_by(Job.updated_at.desc(), Job.id.desc())
+        .limit(limit)
+    )
+    try:
+        with session_factory() as session:
+            session.execute(
+                text("SELECT set_config('statement_timeout', :timeout_ms, true)"),
+                {"timeout_ms": str(max(1, int(timeout_seconds * 1000)))},
+            )
+            jobs = list(session.scalars(statement))
+    except SQLAlchemyError:
+        return DependencyStatus.UNAVAILABLE, []
+
+    visible: list[VisibleJobSummary] = []
+    for job in jobs:
+        attempt = job.attempts[-1] if job.attempts else None
+        running_worker = (
+            attempt.worker_id
+            if job.state == JobState.RUNNING
+            and attempt is not None
+            and attempt.state == AttemptState.RUNNING
+            else None
+        )
+        visible.append(
+            VisibleJobSummary(
+                job_id=job.id,
+                job_type=job.job_type,
+                state=job.state,
+                attempt_state=attempt.state if attempt is not None else None,
+                worker_key=running_worker,
+            )
+        )
+    return DependencyStatus.AVAILABLE, visible
 
 
 def rabbitmq_summary(

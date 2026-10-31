@@ -9,7 +9,13 @@ from typing import Protocol
 
 from sqlalchemy import or_, select
 
-from computegrid_api.config import BrokerSettings, get_broker_settings, get_lease_settings
+from computegrid_api.compute_demo import advance_feeds
+from computegrid_api.config import (
+    BrokerSettings,
+    get_broker_settings,
+    get_compute_demo_settings,
+    get_lease_settings,
+)
 from computegrid_api.db.models import Job, JobState, OutboxEvent
 from computegrid_api.db.session import SessionFactory, get_session_factory, transaction
 from computegrid_api.jobs.recovery import recover_expired_leases
@@ -152,6 +158,7 @@ def run(settings: BrokerSettings | None = None) -> None:
     session_factory = get_session_factory()
     logger.info("Outbox relay started", extra={"event": "relay.started"})
     while True:
+        advance_feeds(session_factory, get_compute_demo_settings())
         recovery = recover_expired_leases(
             session_factory,
             batch_size=lease_settings.lease_recovery_batch_size,

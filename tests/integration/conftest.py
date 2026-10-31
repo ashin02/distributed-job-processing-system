@@ -57,5 +57,6 @@ def session_factory(migrated_engine: Engine) -> Iterator[SessionFactory]:
     finally:
         with Session(migrated_engine) as session, session.begin():
             session.execute(
-                text("TRUNCATE demo_rate_limits, outbox_events, job_attempts, jobs CASCADE")
+                text("TRUNCATE demo_runs, demo_rate_limits, " \
+                     "outbox_events, job_attempts, jobs CASCADE")
             )

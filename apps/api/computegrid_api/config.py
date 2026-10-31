@@ -72,7 +72,41 @@ class BrokerSettings(BaseSettings):
     broker_url: str = Field(default="amqp://guest:guest@localhost:5672//", min_length=1)
     job_queue: str = Field(default="computegrid.jobs", min_length=1)
     outbox_batch_size: int = Field(default=50, ge=1, le=1000)
-    outbox_poll_interval_seconds: float = Field(default=1.0, gt=0, le=60)
+    outbox_poll_interval_seconds: float = Field(default=0.5, gt=0, le=60)
+
+
+class ComputeDemoSettings(BaseSettings):
+    """Server-only computational feed policy; ordinary submissions are unchanged."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_prefix="COMPUTEGRID_",
+        extra="ignore",
+    )
+
+    compute_demo_interval_seconds: float = Field(default=0.5, ge=0.1, le=20)
+    compute_demo_max_jobs: int = Field(default=40, ge=1, le=40)
+    compute_demo_max_feeds: int = Field(default=1, ge=1, le=4)
+    compute_demo_active_capacity: int = Field(default=40, ge=1, le=100)
+    compute_demo_retained_capacity: int = Field(default=5000, ge=1, le=10000)
+    compute_demo_cooldown_seconds: int = Field(default=120, ge=20, le=86400)
+
+    compute_demo_samples: int = Field(
+        default=10_000_000,
+        ge=1,
+        le=10_000_000,
+    )
+
+    compute_demo_variables: int = Field(
+        default=18,
+        ge=4,
+        le=18,
+    )
+
+
+@lru_cache
+def get_compute_demo_settings() -> ComputeDemoSettings:
+    return ComputeDemoSettings()
 
 
 class RetrySettings(BaseSettings):

@@ -67,8 +67,8 @@ class WeightedMaxCutParameters(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    nodes: list[str] = Field(min_length=2, max_length=16)
-    edges: list[WeightedEdge] = Field(min_length=1, max_length=120)
+    nodes: list[str] = Field(min_length=2, max_length=18)
+    edges: list[WeightedEdge] = Field(min_length=1, max_length=153)
 
     @model_validator(mode="after")
     def validate_graph(self) -> WeightedMaxCutParameters:
@@ -107,9 +107,9 @@ class BQMParameters(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     vartype: BQMVariableType
-    variables: list[str] = Field(min_length=1, max_length=16)
-    linear: dict[str, float] = Field(default_factory=dict, max_length=16)
-    quadratic: list[QuadraticBias] = Field(default_factory=list, max_length=120)
+    variables: list[str] = Field(min_length=1, max_length=18)
+    linear: dict[str, float] = Field(default_factory=dict, max_length=18)
+    quadratic: list[QuadraticBias] = Field(default_factory=list, max_length=153)
     offset: float = Field(default=0, ge=-1_000_000, le=1_000_000, allow_inf_nan=False)
 
     @model_validator(mode="after")
@@ -141,7 +141,7 @@ class CQMObjective(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     sense: ObjectiveSense
-    linear: dict[str, float] = Field(default_factory=dict, max_length=16)
+    linear: dict[str, float] = Field(default_factory=dict, max_length=18)
     offset: float = Field(default=0, ge=-1_000_000, le=1_000_000, allow_inf_nan=False)
 
 
@@ -151,7 +151,7 @@ class CQMConstraint(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     name: str = Field(min_length=1, max_length=64)
-    linear: dict[str, float] = Field(min_length=1, max_length=16)
+    linear: dict[str, float] = Field(min_length=1, max_length=18)
     sense: ConstraintSense
     rhs: float = Field(ge=-1_000_000, le=1_000_000, allow_inf_nan=False)
 
@@ -161,7 +161,7 @@ class CQMParameters(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    variables: list[str] = Field(min_length=1, max_length=16)
+    variables: list[str] = Field(min_length=1, max_length=18)
     objective: CQMObjective
     constraints: list[CQMConstraint] = Field(min_length=1, max_length=32)
 

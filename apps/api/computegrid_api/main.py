@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
+from computegrid_api.api.demo_runs import router as demo_runs_router
 from computegrid_api.api.jobs import router as jobs_router
 from computegrid_api.api.operations import router as operations_router
 from computegrid_api.config import get_cors_settings
@@ -41,6 +42,7 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
 )
 app.include_router(jobs_router)
+app.include_router(demo_runs_router)
 app.include_router(operations_router)
 
 

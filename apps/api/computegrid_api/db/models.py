@@ -12,6 +12,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     Enum,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -85,6 +86,9 @@ class Job(TimestampMixin, Base):
 
     id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4)
     client_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    demo_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("demo_runs.id", ondelete="RESTRICT"), index=True
+    )
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
     request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     job_type: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -183,3 +187,33 @@ class DemoRateLimit(Base):
     subject: Mapped[str] = mapped_column(String(255), primary_key=True)
     window_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     request_count: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class DemoRun(Base):
+    """Durable feed cursor; job execution remains independent of the feed."""
+
+    __tablename__ = "demo_runs"
+    __table_args__ = (
+        UniqueConstraint("client_id", "request_key", name="uq_demo_runs_client_key"),
+        CheckConstraint("submitted >= 0 AND submitted <= max_jobs", name="ck_demo_run_count"),
+        CheckConstraint(
+            "interval_seconds >= 0.1 AND interval_seconds <= 20",
+            name="ck_demo_run_interval",
+        ),
+        CheckConstraint(
+            "max_jobs >= 1 AND max_jobs <= 40",
+            name="ck_demo_run_max_jobs",
+        ),
+        Index("ix_demo_runs_client_started", "client_id", "started_at"),
+    )
+    id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), primary_key=True)
+    client_id: Mapped[str] = mapped_column(String(255))
+    request_key: Mapped[str] = mapped_column(String(255))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    next_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    submitted: Mapped[int] = mapped_column(Integer, default=0)
+    max_jobs: Mapped[int] = mapped_column(Integer)
+    interval_seconds: Mapped[float] = mapped_column(Float)
+    presets: Mapped[list[dict[str, Any]]] = mapped_column(JSONB)
+    reason: Mapped[str | None] = mapped_column(String(100))

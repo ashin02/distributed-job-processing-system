@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import time
 from urllib.parse import urlparse
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from celery.contrib.testing.worker import start_worker
 from computegrid_api.api.schemas import JobCreateRequest
 from computegrid_api.celery_app import celery_app
-from computegrid_api.config import get_database_settings
+from computegrid_api.compute_demo import advance_feeds, start_run
+from computegrid_api.config import ComputeDemoSettings, get_database_settings
 from computegrid_api.db.models import JobState, OutboxEvent
 from computegrid_api.db.session import (
     SessionFactory,
@@ -58,7 +59,7 @@ def test_submission_relay_worker_and_duplicate_delivery(
     get_engine.cache_clear()
     get_session_factory.cache_clear()
     celery_app.conf.broker_url = broker_url
-    celery_app.control.purge()
+    queue_name = f"computegrid.e2e.{uuid4().hex}"
 
     repository = JobRepository(session_factory)
     created = repository.create(
@@ -71,17 +72,29 @@ def test_submission_relay_worker_and_duplicate_delivery(
             }
         ),
     )
-    publisher = CeleryEventPublisher(celery_app, "computegrid.jobs")
+    publisher = CeleryEventPublisher(celery_app, queue_name)
 
     with session_factory() as session:
         event = session.scalar(select(OutboxEvent).where(OutboxEvent.job_id == created.job.id))
         assert event is not None
 
     try:
-        with start_worker(celery_app, perform_ping_check=False, pool="solo", concurrency=1):
+        with start_worker(
+            celery_app, perform_ping_check=False, pool="solo", concurrency=1,
+            queues=[queue_name],
+        ):
             assert relay_once(session_factory, publisher, batch_size=10) == 1
             publisher.publish(event)
             assert wait_for_terminal(repository, created.job.id) == JobState.SUCCEEDED
+            # A feed-generated job traverses the same real RabbitMQ/worker pipeline.
+            demo_settings = ComputeDemoSettings(  # type: ignore[call-arg]
+                _env_file=None, compute_demo_max_jobs=1, compute_demo_samples=1000)
+            start_run(session_factory, "e2e-client", "compute-feed", demo_settings)
+            assert advance_feeds(session_factory, demo_settings) == 1
+            assert relay_once(session_factory, publisher, batch_size=10) == 1
+            page = repository.list(client_id="e2e-client", limit=10, offset=0)
+            demo_job = next(job for job in page.items if job.demo_run_id is not None)
+            assert wait_for_terminal(repository, demo_job.id) == JobState.SUCCEEDED
     finally:
         get_database_settings.cache_clear()
         get_engine.cache_clear()

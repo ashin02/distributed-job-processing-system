@@ -45,6 +45,7 @@ def operations_summary(
     service: Annotated[OperationsService, Depends(get_operations_service)],
     settings: Annotated[Settings, Depends(get_settings)],
     demo_access: Annotated[DemoAccessService, Depends(get_demo_access_service)],
+    flow_only: bool = False,
 ) -> OperationsSummary | PublicOperationsSummary:
     """Return a full developer or identity-safe anonymous snapshot."""
     if not client.is_developer:
@@ -60,8 +61,8 @@ def operations_summary(
             demo_access.check(
                 subject=client.client_id,
                 budget=DemoRateLimit(
-                    scope="operations-reads",
-                    limit=settings.demo_operations_limit,
+                    scope="operations-flow-reads" if flow_only else "operations-reads",
+                    limit=150 if flow_only else settings.demo_operations_limit,
                     window_seconds=settings.demo_rate_window_seconds,
                 ),
             )
@@ -76,5 +77,13 @@ def operations_summary(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Anonymous demo protection is temporarily unavailable",
             ) from error
-    summary = service.summary()
-    return summary if client.is_developer else public_operations_summary(summary)
+    summary = (service.summary(client_id=client.client_id, flow_only=True)
+               if flow_only else service.summary(client_id=client.client_id))
+    return (
+        summary
+        if client.is_developer
+        else public_operations_summary(
+            summary,
+            worker_key_secret=settings.demo_session_secret.get_secret_value(),
+        )
+    )

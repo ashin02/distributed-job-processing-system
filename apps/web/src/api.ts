@@ -113,6 +113,59 @@ export interface JobDetail {
   completed_at: string | null;
 }
 
+export type DependencyStatus = "AVAILABLE" | "UNAVAILABLE" | "UNKNOWN";
+export type WorkerActivity = "IDLE" | "BUSY" | "UNKNOWN";
+
+export interface RabbitMQOperations {
+  status: DependencyStatus;
+  queue_name?: string;
+  messages_ready: number | null;
+  messages_unacknowledged: number | null;
+  consumer_count: number | null;
+  message: string | null;
+}
+
+export interface OperationsWorker {
+  worker_id?: string;
+  label?: string;
+  worker_key?: string;
+  availability: DependencyStatus;
+  activity: WorkerActivity;
+  current_job_id?: string | null;
+}
+
+export interface WorkersOperations {
+  status: DependencyStatus;
+  items: OperationsWorker[];
+  available?: number;
+  idle?: number;
+  busy?: number;
+  message: string | null;
+}
+
+export interface PostgreSQLOperations {
+  status: DependencyStatus;
+  job_counts: Partial<Record<JobState, number>> | null;
+  message: string | null;
+}
+
+export interface OperationsSummary {
+  generated_at: string;
+  rabbitmq: RabbitMQOperations;
+  workers: WorkersOperations;
+  postgresql: PostgreSQLOperations;
+  visible_jobs_status: DependencyStatus;
+  visible_jobs: OperationsJob[];
+}
+
+export interface OperationsJob {
+  job_id: string;
+  job_type: JobType;
+  state: JobState;
+  attempt_state: AttemptState | null;
+  worker_key: string | null;
+}
+
 export class ApiError extends Error {
   readonly status: number;
 
@@ -123,7 +176,7 @@ export class ApiError extends Error {
   }
 }
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000").replace(
+export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000").replace(
   /\/$/,
   "",
 );
@@ -176,11 +229,44 @@ export function submitJob(
   });
 }
 
-export function listJobs(token: string | null, limit: number, offset: number): Promise<JobListPage> {
+export function listJobs(token: string | null, limit: number, offset: number, signal?: AbortSignal): Promise<JobListPage> {
   const query = new URLSearchParams({ limit: String(limit), offset: String(offset) });
-  return request<JobListPage>(`/v1/jobs?${query}`, token);
+  return request<JobListPage>(`/v1/jobs?${query}`, token, { signal });
 }
 
-export function getJob(token: string | null, jobId: string): Promise<JobDetail> {
-  return request<JobDetail>(`/v1/jobs/${encodeURIComponent(jobId)}`, token);
+export function getJob(token: string | null, jobId: string, signal?: AbortSignal): Promise<JobDetail> {
+  return request<JobDetail>(`/v1/jobs/${encodeURIComponent(jobId)}`, token, { signal });
+}
+
+export function getOperationsSummary(
+  token: string | null,
+  signal?: AbortSignal,
+): Promise<OperationsSummary> {
+  return request<OperationsSummary>("/v1/operations/summary", token, { signal });
+}
+
+export function getJobFlow(token: string | null, signal?: AbortSignal): Promise<OperationsSummary> {
+  return request<OperationsSummary>("/v1/operations/summary?flow_only=true", token, { signal });
+}
+
+export interface DemoRun {
+  id: string;
+  started_at: string;
+  ends_at: string;
+  remaining_seconds: number;
+  feed_status: "FEEDING" | "COMPLETE";
+  submitted: number;
+  counts: Record<JobState, number>;
+  execution_complete: boolean;
+  reason: string | null;
+}
+
+export function latestDemoRun(token: string | null, signal?: AbortSignal): Promise<DemoRun | null> {
+  return request<DemoRun | null>("/v1/demo-runs/latest", token, { signal });
+}
+
+export function startDemoRun(token: string | null, key: string, signal?: AbortSignal): Promise<DemoRun> {
+  return request<DemoRun>("/v1/demo-runs", token, {
+    method: "POST", signal, headers: { "Idempotency-Key": key },
+  });
 }

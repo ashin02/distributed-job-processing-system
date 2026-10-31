@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup } from "@testing-library/react";
-import { afterEach, beforeEach } from "vitest";
+import { afterEach, beforeEach, vi } from "vitest";
 
 let generatedId = 0;
 
@@ -10,9 +10,16 @@ Object.defineProperty(globalThis.crypto, "randomUUID", {
 });
 
 beforeEach(() => {
+  vi.clearAllMocks();
   sessionStorage.clear();
 });
 
 afterEach(() => {
   cleanup();
+  if (vi.isFakeTimers()) {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  }
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
 });

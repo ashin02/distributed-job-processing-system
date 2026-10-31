@@ -51,7 +51,7 @@ def test_migration_creates_expected_schema(migrated_engine: Engine) -> None:
 
     with migrated_engine.connect() as connection:
         assert (
-            MigrationContext.configure(connection).get_current_revision() == "0002_anonymous_demo"
+            MigrationContext.configure(connection).get_current_revision() == "0005_demo_run_bounds"
         )
 
 
