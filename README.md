@@ -6,9 +6,10 @@ A fault-tolerant distributed job processing system built with FastAPI, PostgreSQ
 
 ## Demo
 
-<!-- Insert dashboard screenshot here -->
+[Watch Demo Video](assets/demo.mp4)
 
-<!-- Insert link to recorded demo video here -->
+![Distributed Job Processing Service Dashboard](assets/demo.png)
+
 
 The dashboard visualizes real job submissions, RabbitMQ queue activity, worker assignments, and completed jobs.
 
@@ -57,7 +58,7 @@ The system uses at-least-once delivery with guarded state transitions, rather th
 
 ## Performance Benchmarks
 
-<!-- Insert worker scaling benchmark graph here -->
+![Measured worker throughput with trial variability and ideal linear scaling](assets/worker-scaling.png)
 
 Benchmarked with 100 Monte Carlo jobs per run, 5 million samples per job, and three trials per worker configuration.
 
@@ -72,6 +73,12 @@ Scaling from one to four workers achieved **3.63× throughput speedup with 90.8%
 All **900 benchmark jobs completed successfully**, with zero submission or execution failures.
 
 Benchmarks ran on the same desktop using Docker Compose, with one execution process per worker. Results are averages across three runs.
+
+Error bars show sample standard deviation across the three trials, not confidence
+intervals. Speedup is the ratio of mean throughputs; efficiency is speedup divided
+by worker count. The dashed reference is ideal scaling from the one-worker mean.
+Regenerate from the original JSON files with `python scripts/plot_worker_scaling.py`
+(requires Matplotlib: `pip install matplotlib`).
 
 ## Run Locally
 

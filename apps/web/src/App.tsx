@@ -85,7 +85,7 @@ const JOB_DEFINITIONS: Record<JobType, JobDefinition> = {
     subtitle: "Graph → QUBO → exact solve",
     represents: "A graph partition problem that maximizes the total edge weight crossing between two groups.",
     applications: "Network community detection, circuit layout, statistical physics, and clustering approximations.",
-    execution: "ComputeGrid converts the graph to a binary QUBO/BQM and checks every partition, using symmetry to skip equivalent complements.",
+    execution: "The service converts the graph to a binary QUBO/BQM and checks every partition, using symmetry to skip equivalent complements.",
     beyond: "Exact enumeration grows exponentially. Larger graphs often use classical approximation or local-search heuristics; quantum annealing and hybrid solvers are also possible approaches, without a general speed advantage guarantee.",
   },
   bqm: {
@@ -93,7 +93,7 @@ const JOB_DEFINITIONS: Record<JobType, JobDefinition> = {
     subtitle: "QUBO or Ising model",
     represents: "A quadratic objective over BINARY {0,1} or SPIN {-1,+1} variables, with linear biases and pairwise interactions.",
     applications: "Scheduling, feature selection, portfolio models, assignment problems, and Ising-system studies.",
-    execution: "ComputeGrid evaluates every assignment and returns the one with the lowest model energy.",
+    execution: "The service evaluates every assignment and returns the one with the lowest model energy.",
     beyond: "Exact enumeration doubles with each variable. Classical heuristics, specialized exact solvers, quantum annealing, and hybrid solvers offer different tradeoffs; none is automatically best for every model.",
   },
   cqm: {
@@ -101,7 +101,7 @@ const JOB_DEFINITIONS: Record<JobType, JobDefinition> = {
     subtitle: "Restricted constrained model",
     represents: "A constrained model that optimizes an objective while requiring every selected assignment to satisfy explicit rules.",
     applications: "Resource allocation, knapsack and selection problems, production planning, and constrained scheduling.",
-    execution: "ComputeGrid enumerates binary assignments, filters them through linear constraints, and selects the best feasible objective value.",
+    execution: "The service enumerates binary assignments, filters them through linear constraints, and selects the best feasible objective value.",
     beyond: "Enumeration scales exponentially. Larger linear models commonly use MILP or constraint-programming solvers; hybrid methods may help some formulations, while quantum annealing generally requires a suitable reformulation.",
   },
 };
@@ -225,9 +225,10 @@ function GraphView({
   graph: WeightedMaxCutParameters;
   partition?: { side_a: string[]; side_b: string[] };
 }) {
-  const size = 280;
+  const [showWeights, setShowWeights] = useState(false);
+  const size = 480;
   const center = size / 2;
-  const radius = 96;
+  const radius = 196;
   const positions = new Map(
     graph.nodes.map((node, index) => {
       const angle = (2 * Math.PI * index) / graph.nodes.length - Math.PI / 2;
@@ -240,6 +241,9 @@ function GraphView({
   const sideB = new Set(partition?.side_b ?? []);
 
   return (
+    <div className="graph-inspector">
+    <label className="toggle"><input type="checkbox" checked={showWeights}
+      onChange={(event) => setShowWeights(event.target.checked)} />Show edge weights</label>
     <svg className="graph-view" viewBox={`0 0 ${size} ${size}`} role="img" aria-label="Weighted graph">
       {graph.edges.map((edge) => {
         const source = positions.get(edge.source);
@@ -248,8 +252,9 @@ function GraphView({
         const crossed = partition !== undefined && sideB.has(edge.source) !== sideB.has(edge.target);
         return (
           <g key={`${edge.source}-${edge.target}`} className={crossed ? "edge edge-cut" : "edge"}>
+            <title>{edge.source} ↔ {edge.target}: {edge.weight}</title>
             <line x1={source.x} y1={source.y} x2={target.x} y2={target.y} />
-            <text x={(source.x + target.x) / 2} y={(source.y + target.y) / 2}>{edge.weight}</text>
+            {showWeights && <text x={(source.x + target.x) / 2} y={(source.y + target.y) / 2}>{edge.weight}</text>}
           </g>
         );
       })}
@@ -264,6 +269,7 @@ function GraphView({
         );
       })}
     </svg>
+    </div>
   );
 }
 
@@ -307,24 +313,25 @@ function OptimizationResult({ job }: { job: JobDetail }) {
             </div>
           ) : <p className="muted compact">The partition appears after execution.</p>}
         </article>
-        <article className="qubo-card">
+        <details className="qubo-card">
+          <summary>QUBO coefficients · linear and quadratic</summary>
           <div className="qubo-heading">
             <h3>QUBO coefficients</h3>
             <span>{qubo?.energy_relation ?? "Awaiting result"}</span>
           </div>
           {qubo?.linear && qubo.quadratic ? (
             <div className="coefficient-groups">
-              <div><strong>Linear</strong>{qubo.linear.map((term) => (
+              <div className="coefficient-scroll" tabIndex={0} role="region" aria-label="Linear coefficients"><strong>Linear</strong>{qubo.linear.map((term) => (
                 <code key={term.variable}>Q[{term.variable}] = {term.bias}</code>
               ))}</div>
-              <div><strong>Quadratic</strong>{qubo.quadratic.map((term) => (
+              <div className="coefficient-scroll" tabIndex={0} role="region" aria-label="Quadratic coefficients"><strong>Quadratic</strong>{qubo.quadratic.map((term) => (
                 <code key={`${term.source}-${term.target}`}>
                   Q[{term.source},{term.target}] = {term.bias}
                 </code>
               ))}</div>
             </div>
           ) : <p className="muted compact">The QUBO model appears after execution.</p>}
-        </article>
+        </details>
       </div>
       {solver && (
         <div className="solver-meta">
@@ -384,7 +391,8 @@ function GenericModelResult({ job }: { job: JobDetail }) {
         </div>
       )}
       {constraints.length > 0 && (
-        <div className="constraint-list">
+        <details className="constraint-details"><summary>Constraint evaluations ({constraints.length})</summary>
+        <div className="constraint-list" tabIndex={0} role="region" aria-label="Constraint evaluations">
           {constraints.map((constraint) => (
             <span key={String(constraint.name)}>
               <strong>{String(constraint.name)}</strong>
@@ -393,6 +401,7 @@ function GenericModelResult({ job }: { job: JobDetail }) {
             </span>
           ))}
         </div>
+        </details>
       )}
       {solver && (
         <div className="solver-meta">
@@ -470,6 +479,24 @@ interface AppProps {
 export default function App({
   demoMode = import.meta.env.VITE_DEMO_MODE === "true",
 }: AppProps) {
+  useEffect(() => {
+    const name = "Distributed Job Processing Service";
+    document.title = name;
+    const metadata: Record<string, string> = {
+      description: "Observe distributed job execution, worker activity, and persisted computational results.",
+      "application-name": name,
+      "theme-color": "#0d1117",
+    };
+    Object.entries(metadata).forEach(([key, content]) => {
+      let element = document.querySelector<HTMLMetaElement>(`meta[name="${key}"]`);
+      if (!element) {
+        element = document.createElement("meta");
+        element.name = key;
+        document.head.append(element);
+      }
+      element.content = content;
+    });
+  }, []);
   const storedToken = sessionStorage.getItem(TOKEN_STORAGE_KEY) ?? "";
   const [tokenDraft, setTokenDraft] = useState(storedToken);
   const [token, setToken] = useState(storedToken);
@@ -692,10 +719,9 @@ export default function App({
     <div className="app-shell">
       <header className="topbar">
         <div className="brand">
-          <span className="brand-mark" aria-hidden="true">CG</span>
           <div>
-            <p className="eyebrow">Local operations console</p>
-            <h1>ComputeGrid</h1>
+            <p className="eyebrow">Execution console</p>
+            <h1>Distributed Job Processing Service</h1>
           </div>
         </div>
         {demoMode ? (
@@ -728,10 +754,9 @@ export default function App({
         <section className="intro panel">
           <div>
             <p className="eyebrow">Distributed execution</p>
-            <h2>Reliable execution for compute and optimization models.</h2>
+            <h2>Execution workspace</h2>
             <p className="muted">
-              Submit Monte Carlo, graph optimization, BQM, and restricted CQM jobs. Every
-              transition, retry, lease recovery, and durable result stays visible.
+              Submit workloads, observe workers, and inspect persisted results.
             </p>
           </div>
           <div className="metric">
@@ -976,11 +1001,13 @@ export default function App({
               {(detail.type === "bqm" || detail.type === "cqm") && (
                 <GenericModelResult job={detail} />
               )}
+              <details className="raw-details"><summary>Raw parameters, result, and error</summary>
               <div className={`detail-grid ${detail.type === "weighted_max_cut" ? "detail-grid-compact" : ""}`}>
                 <article><h3>Parameters</h3><JsonBlock value={detail.parameters} empty="No parameters." /></article>
                 <article><h3>Result</h3><JsonBlock value={detail.result} empty="No result has been committed." /></article>
                 <article><h3>Error</h3><JsonBlock value={detail.error} empty="No error recorded." /></article>
               </div>
+              </details>
               <div className="attempts">
                 <h3>Attempts</h3>
                 {detail.attempts.length === 0 ? (

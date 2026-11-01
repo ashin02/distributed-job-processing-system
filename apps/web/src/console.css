@@ -1,0 +1,215 @@
+/* Infrastructure console theme. Tokens are shared by forms, flow, and inspection. */
+:root {
+  color-scheme: dark;
+  --console-bg: #0d1117;
+  --console-panel: #151b23;
+  --console-raised: #1c2430;
+  --console-border: #30363d;
+  --console-text: #e6edf3;
+  --console-muted: #a5b0bd;
+  --console-accent: #79b8ff;
+  --console-success: #7dc99b;
+  --console-warning: #e2b86b;
+  --console-danger: #f28b89;
+  --console-radius: 5px;
+  --console-mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+  --ink: var(--console-text);
+  --muted: var(--console-muted);
+  --line: var(--console-border);
+  --surface: var(--console-panel);
+  --accent: var(--console-accent);
+  --accent-dark: var(--console-accent);
+  --amber: var(--console-warning);
+  --danger: var(--console-danger);
+  --shadow: none;
+}
+html body {
+  margin: 0; background: var(--console-bg); color: var(--console-text);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 14px; line-height: 1.5; font-variant-numeric: tabular-nums;
+}
+body .app-shell { background: var(--console-bg); }
+body * { box-sizing: border-box; }
+body :focus-visible { outline: 2px solid var(--console-accent); outline-offset: 3px; }
+body .topbar {
+  padding: 14px 24px; background: var(--console-panel); color: var(--console-text);
+  border-bottom: 1px solid var(--console-border); gap: 20px;
+}
+body h1 { font-size: 18px; font-weight: 600; letter-spacing: -.02em; }
+body h2 { font-size: 17px; letter-spacing: -.015em; }
+body h3 { font-size: 14px; }
+body .eyebrow { color: var(--console-muted); font-size: 11px; letter-spacing: .02em; text-transform: none; }
+body .topbar .eyebrow { color: var(--console-muted); }
+body main { width: calc(100% - 48px); max-width: 1680px; margin: 20px auto 40px; }
+body .panel { background: var(--console-panel); border: 1px solid var(--console-border);
+  border-radius: var(--console-radius); box-shadow: none; backdrop-filter: none; }
+body .intro { padding: 12px 16px; margin-bottom: 16px; gap: 16px; }
+body .intro h2 { margin-bottom: 2px; }
+body .intro .eyebrow { display: none; }
+body .intro .muted { font-size: 12px; }
+body .metric { background: none; padding: 0; min-width: 100px; border: 0; }
+body .metric strong { font-size: 23px; color: var(--console-text); }
+body .workspace-grid { display: grid; grid-template-columns: minmax(270px, 320px) minmax(0, 1fr); gap: 16px; align-items: start; }
+body .submit-panel, body .jobs-panel, body .detail-panel { padding: 16px; min-width: 0; }
+body .detail-panel { margin-top: 16px; }
+body .section-heading { gap: 12px; margin-bottom: 12px; }
+body input, body textarea, body select, body .auth-form input {
+  background: var(--console-bg); color: var(--console-text); border: 1px solid var(--console-border);
+  border-radius: var(--console-radius); padding: 7px 9px; box-shadow: none;
+}
+body input:focus, body textarea:focus { border-color: var(--console-accent); box-shadow: none; }
+body input[type=checkbox] { accent-color: var(--console-accent); width: auto; }
+body textarea { min-height: 180px; max-height: 360px; font: 12px/1.6 var(--console-mono); resize: vertical; }
+body .stacked-form { gap: 12px; }
+body .stacked-form label > span, body .selection-disclosure, body .idempotency-note { color: var(--console-muted); font-size: 11px; }
+body .button-primary, body .button-secondary {
+  padding: 7px 11px; border-radius: var(--console-radius); font-size: 12px; font-weight: 600;
+  box-shadow: none; background: var(--console-raised); color: var(--console-text);
+  border: 1px solid var(--console-border);
+}
+body .button-primary { border-color: var(--console-accent); color: var(--console-accent); }
+body button:hover:not(:disabled) { background: var(--console-raised); border-color: var(--console-accent); }
+body .job-type-switch { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+body .job-type-card { background: var(--console-bg); border: 1px solid var(--console-border); border-radius: var(--console-radius); }
+body .job-type-card-selected { border-color: var(--console-accent); background: var(--console-raised); }
+body .job-type-select, body .job-info-button { color: var(--console-text); background: none; }
+body .job-type-select { padding: 9px; font-size: 12px; }
+body .job-type-select span { color: var(--console-muted); font-size: 10px; }
+body .job-information-panel, body .idempotency-note, body .execution-label {
+  background: var(--console-bg); color: var(--console-muted); border-color: var(--console-border); border-radius: var(--console-radius);
+}
+body .auth-form label, body .connection, body .muted { color: var(--console-muted); }
+body .connection.connected { color: var(--console-success); }
+body .operations-console { margin: 0 0 20px; padding: 0 0 16px; border: 0; border-bottom: 1px solid var(--console-border); border-radius: 0; background: none; }
+body .compute-demo { gap: 10px; padding-bottom: 12px; margin-bottom: 14px; border-color: var(--console-border); }
+body .compute-demo p, body .compute-demo [role=status] { color: var(--console-muted); font-size: 12px; }
+body .flow-section-heading strong, body .flow-section-heading span, body .flow-dependency-line,
+body .worker-state, body .availability { font-size: 11px; letter-spacing: .01em; text-transform: none; }
+body .queue-track, body .retry-track { background: var(--console-bg); border-color: var(--console-border); border-radius: var(--console-radius); min-height: 52px; padding: 8px; }
+body .flow-worker-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+body .flow-worker { background: var(--console-bg); border: 1px solid var(--console-border); border-top: 2px solid var(--console-muted); border-radius: var(--console-radius); padding: 10px; min-height: 112px; }
+body .flow-worker-busy { border-top-color: var(--console-warning); }
+body .flow-worker-idle { border-top-color: var(--console-success); }
+body .flow-worker-unknown { opacity: 1; border-top-color: var(--console-danger); }
+body .flow-worker-heading { flex-wrap: wrap; gap: 4px; }
+body .flow-worker-heading strong { font: 11px var(--console-mono); }
+body .flow-worker-slot { min-height: 64px; }
+body .flow-job { background: var(--console-raised); border: 1px solid var(--console-border); border-left: 2px solid var(--console-accent); border-radius: 3px; min-width: 70px; padding: 6px 8px; }
+body .flow-job-running, body .flow-job-retry_wait, body .flow-job-abandoned { border-left-color: var(--console-warning); background: var(--console-raised); }
+body .flow-job-succeeded { border-left-color: var(--console-success); }
+body .flow-job-failed, body .flow-job-cancelled { border-left-color: var(--console-danger); }
+body .flow-job strong { color: var(--console-text); font-size: 11px; }
+body .flow-job span, body .flow-job small { color: var(--console-muted); }
+body .unassigned-lane { background: var(--console-bg); border-color: var(--console-warning); border-radius: var(--console-radius); }
+body .database-summary, body .completion-lane { border-color: var(--console-border); }
+body .state-counts { grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px; }
+body .state-counts small { font-size: 9px; color: var(--console-muted); }
+body .status, body .attempt-state, body .solution-status { background: none; border: 0; border-radius: 0; padding: 0; color: var(--console-muted); font: 11px var(--console-mono); }
+body .status-succeeded, body .attempt-succeeded, body .availability-available, body .worker-state-idle { color: var(--console-success); }
+body .status-running, body .status-retry_wait, body .worker-state-busy { color: var(--console-warning); }
+body .status-failed, body .attempt-failed, body .availability-unavailable, body .worker-state-unknown { color: var(--console-danger); }
+body .table-wrap { overflow: auto; max-width: 100%; }
+body table { width: 100%; border-collapse: collapse; font-size: 12px; }
+body th { background: var(--console-bg); color: var(--console-muted); text-transform: none; letter-spacing: 0; font-size: 11px; font-weight: 500; }
+body td, body th { padding: 9px 10px; border-bottom: 1px solid var(--console-border); }
+body tr.selected td, body tbody tr:hover td { background: var(--console-raised); }
+body .job-link { color: var(--console-accent); }
+body .job-link span { color: var(--console-muted); font: 11px var(--console-mono); }
+body .pagination, body .toolbar { gap: 8px; font-size: 11px; color: var(--console-muted); }
+body .notice, body .empty-state, body .operations-empty, body .workers-empty,
+body .operations-warning, body .operations-error, body .infeasible-message {
+  padding: 10px 12px; background: var(--console-bg); border: 1px solid var(--console-border);
+  border-radius: var(--console-radius); color: var(--console-muted); box-shadow: none;
+}
+body .notice.error, body .operations-error { color: var(--console-danger); border-left-color: var(--console-danger); }
+body .notice.success { color: var(--console-success); }
+body .operations-warning, body .operations-stale { color: var(--console-warning); background: var(--console-bg); }
+body .detail-meta { gap: 12px; background: none; padding: 0; }
+body .detail-meta code { overflow-wrap: anywhere; }
+body .execution-timeline { background: none; border-color: var(--console-border); padding: 12px 0; margin: 12px 0; }
+body .timeline-stages { gap: 8px; }
+body .timeline-stages li { background: var(--console-bg); border: 1px solid var(--console-border); border-radius: var(--console-radius); padding: 10px; }
+body .timeline-marker { background: var(--console-raised); color: var(--console-text); border-color: var(--console-border); box-shadow: none; width: 22px; height: 22px; }
+body .timeline-stage-copy strong { color: var(--console-text); font: 11px var(--console-mono); }
+body .timeline-stage-copy time, body .timeline-stage-copy span { font-size: 11px; color: var(--console-muted); }
+body .optimization-result, body .model-result { display: flex; flex-direction: column; }
+body .optimization-grid { display: contents; }
+body .graph-card { order: 1; background: var(--console-bg); border: 1px solid var(--console-border); border-radius: var(--console-radius); padding: 12px; }
+body .graph-inspector { width: 100%; }
+body .graph-view { display: block; width: 100%; max-width: 660px; height: auto; max-height: 520px; margin: 0 auto; }
+body .edge line { stroke: var(--console-border); stroke-width: 1; opacity: .7; }
+body .edge-cut line { stroke: var(--console-accent); opacity: .4; }
+body .edge text { fill: var(--console-muted); font: 10px var(--console-mono); }
+body .graph-node circle { fill: var(--console-raised); stroke: var(--console-muted); }
+body .graph-node-b circle { fill: var(--console-panel); stroke: var(--console-accent); stroke-width: 3; }
+body .graph-node text { fill: var(--console-text); font: 12px var(--console-mono); }
+body .partition-legend { color: var(--console-muted); flex-wrap: wrap; overflow-wrap: anywhere; }
+body .solver-meta { order: 2; background: var(--console-bg); border-color: var(--console-border); border-radius: var(--console-radius); gap: 16px; padding: 10px; margin: 12px 0; flex-wrap: wrap; }
+body .qubo-card, body .constraint-details { order: 3; }
+body details { background: var(--console-bg); border: 1px solid var(--console-border); border-radius: var(--console-radius); padding: 10px 12px; margin: 10px 0; min-width: 0; }
+body summary { cursor: pointer; color: var(--console-text); font-size: 12px; font-weight: 600; }
+body details[open] > summary { margin-bottom: 12px; }
+body .coefficient-groups { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 16px; }
+/* Content-sized grid rows must overflow this viewport, never shrink and clip glyphs. */
+body .coefficient-scroll { grid-auto-rows: max-content; max-height: 280px; overflow: auto; }
+body .coefficient-scroll code { display: block; padding: 3px 0; border-bottom: 1px solid var(--console-border); background: none; color: var(--console-text); font: 12px/1.5 var(--console-mono); }
+body .constraint-list { max-height: 280px; overflow: auto; }
+body .constraint-list > span { background: none; border-color: var(--console-border); border-radius: 0; }
+body .constraint-list i { color: var(--console-success); }
+body .solution-grid, body .assignment-grid { min-width: 0; }
+body .solution-metric, body .assignment-grid > span, body .cut-score { background: var(--console-bg); color: var(--console-text); border-color: var(--console-border); border-radius: var(--console-radius); }
+body .solution-metric strong, body .cut-score strong { color: var(--console-accent); }
+body pre { max-height: 280px; overflow: auto; background: var(--console-bg); color: var(--console-text); border: 1px solid var(--console-border); font: 12px/1.6 var(--console-mono); }
+body .detail-grid { min-width: 0; }
+body .detail-grid article { min-width: 0; background: none; }
+/* Explicit child colors prevent component rules from defeating inheritance. */
+body .detail-meta > div { background: var(--console-panel); }
+body .optimization-result, body .model-result { background: var(--console-panel); color: var(--console-text); }
+body .solver-meta { background: var(--console-panel); }
+body .solver-meta span { background: transparent; color: var(--console-text); }
+body .solver-meta strong { color: var(--console-muted); }
+body .job-link strong, body .assignment-grid strong { color: var(--console-text); }
+body .assignment-grid code { color: var(--console-muted); }
+body .status-accepted, body .status-queued { color: var(--console-accent); }
+body .status-cancelled, body .attempt-abandoned, body .solution-infeasible { color: var(--console-danger); }
+body .attempt-running { color: var(--console-warning); }
+body .solution-optimal { color: var(--console-success); }
+body .timeline-stage-pending .timeline-stage-copy { opacity: 1; }
+body .timeline-stage-pending .timeline-stage-copy strong { color: var(--console-muted); }
+body .timeline-stage-active .timeline-stage-copy strong { color: var(--console-warning); }
+body .timeline-stage-failed .timeline-stage-copy strong { color: var(--console-danger); }
+body .timeline-stage-complete .timeline-marker { color: var(--console-success); border-color: var(--console-success); }
+body .timeline-stage-active .timeline-marker { border-color: var(--console-warning); }
+body .timeline-stage-failed .timeline-marker { background: var(--console-raised); color: var(--console-danger); border-color: var(--console-danger); }
+body .timeline-stage::after { background: var(--console-border); }
+body .timeline-stage-complete::after { background: var(--console-success); }
+body .live-refresh > span { background: var(--console-accent); }
+body .graph-node-a circle { fill: var(--console-raised); stroke: var(--console-success); }
+body .partition-legend .side-a { background: var(--console-success); }
+body .partition-legend .side-b { background: var(--console-accent); }
+body .edge text { stroke: var(--console-bg); }
+body .edge-cut text { fill: var(--console-accent); }
+body input::placeholder, body textarea::placeholder { color: var(--console-muted); opacity: 1; }
+body button:disabled { color: var(--console-muted); border-color: var(--console-border); opacity: 1; }
+body input:disabled, body textarea:disabled { color: var(--console-muted); opacity: 1; }
+body .table-wrap { border-color: var(--console-border); }
+body .job-type-card-selected { box-shadow: none; }
+@keyframes recent-job-highlight { from { background: var(--console-raised); } to { background: transparent; } }
+@media (max-width: 1100px) {
+  body .workspace-grid { grid-template-columns: 280px minmax(0, 1fr); }
+  body .flow-worker-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  body .state-counts { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@media (max-width: 760px) {
+  body .topbar { padding: 12px; flex-wrap: wrap; }
+  body .auth-form { min-width: 0; width: 100%; }
+  body main { width: calc(100% - 24px); margin-top: 12px; }
+  body .workspace-grid { grid-template-columns: minmax(0, 1fr); }
+  body .jobs-panel { grid-row: 1; }
+  body .coefficient-groups, body .detail-grid, body .timeline-stages { grid-template-columns: minmax(0, 1fr); }
+  body .intro { align-items: start; }
+  body .jobs-heading { flex-wrap: wrap; }
+}
+@media (prefers-reduced-motion: reduce) {
+  body *, body *::before, body *::after { animation: none !important; transition: none !important; }
+}

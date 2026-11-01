@@ -304,6 +304,47 @@ describe("ComputeGrid dashboard", () => {
     expect(screen.getByText("lease expired")).toBeInTheDocument();
   });
 
+  it("renders every dense Max-Cut coefficient and preserves disclosure state", async () => {
+    // A complete 18-node unit-weight graph produces 18 linear and 153 quadratic terms.
+    const nodes = Array.from({ length: 18 }, (_, index) => `variable_${index}_long_label`);
+    const edges = nodes.flatMap((source, index) => nodes.slice(index + 1).map((target) => ({
+      source, target, weight: 1,
+    })));
+    const linear = nodes.map((variable) => ({ variable, bias: -17 }));
+    const quadratic = edges.map(({ source, target }) => ({ source, target, bias: 2 }));
+    const completed = { ...job, type: "weighted_max_cut" as const, state: "SUCCEEDED" as const };
+    vi.mocked(listJobs).mockResolvedValue({ items: [completed], total: 1, limit: 10, offset: 0 });
+    vi.mocked(getJob).mockResolvedValue({
+      ...detail, ...completed,
+      parameters: { nodes, edges },
+      result: { qubo: { linear, quadratic, energy_relation: "energy = -cut_weight" } },
+    });
+    render(<App />);
+    const user = await connect();
+    await user.click(await screen.findByRole("button", { name: /01JCOMPUTE/ }));
+    const toggle = await screen.findByText("QUBO coefficients · linear and quadratic");
+    const disclosure = toggle.closest("details")!;
+    expect(disclosure).not.toHaveAttribute("open");
+    await user.click(toggle);
+    expect(disclosure).toHaveAttribute("open");
+    const linearRegion = screen.getByRole("region", { name: "Linear coefficients" });
+    const quadraticRegion = screen.getByRole("region", { name: "Quadratic coefficients" });
+    expect(linearRegion.querySelectorAll("code")).toHaveLength(18);
+    expect(quadraticRegion.querySelectorAll("code")).toHaveLength(153);
+    for (const term of linear) {
+      expect(within(linearRegion).getByText(`Q[${term.variable}] = ${term.bias}`)).toBeVisible();
+    }
+    for (const term of quadratic) {
+      expect(within(quadraticRegion).getByText(`Q[${term.source},${term.target}] = ${term.bias}`)).toBeVisible();
+    }
+    await user.click(toggle);
+    expect(disclosure).not.toHaveAttribute("open");
+    await user.click(toggle);
+    expect(within(quadraticRegion).getByText(
+      `Q[${nodes[16]},${nodes[17]}] = 2`,
+    )).toBeVisible();
+  });
+
   it("offers four selectable jobs with accessible educational panels", async () => {
     render(<App />);
     const user = userEvent.setup();
