@@ -19,6 +19,12 @@ _CONTEXT_FIELDS = (
     "retries_scheduled",
     "terminal_failures",
     "stale_attempts",
+    "claim_seconds",
+    "computation_seconds",
+    "finalize_seconds",
+    "persistence_seconds",
+    "overhead_seconds",
+    "total_seconds",
 )
 
 

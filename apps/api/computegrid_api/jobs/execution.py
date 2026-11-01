@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from random import Random, random
+from time import perf_counter
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -24,6 +25,7 @@ logger = logging.getLogger(__name__)
 type JobResult = dict[str, Any]
 type Computation = Callable[[dict[str, Any]], JobResult]
 type RandomSource = Callable[[], float]
+type ExecutionTimingSink = Callable[["ExecutionTiming"], None]
 
 
 class RetryableExecutionError(Exception):
@@ -54,6 +56,20 @@ class JobClaim:
     fencing_token: int
     job_type: str
     parameters: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionTiming:
+    """Optional wall-clock phase timings for one claimed execution."""
+
+    job_id: UUID
+    disposition: ExecutionDisposition
+    claim_seconds: float
+    computation_seconds: float
+    finalize_seconds: float
+    persistence_seconds: float
+    overhead_seconds: float
+    total_seconds: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +160,7 @@ def execute_job(
     retry_policy: RetryPolicy | None = None,
     random_source: RandomSource = random,
     lease_duration: timedelta | None = None,
+    timing_sink: ExecutionTimingSink | None = None,
 ) -> ExecutionDisposition:
     """Claim, execute, and durably finish or reschedule one job attempt."""
     factory = session_factory or get_session_factory()
@@ -153,6 +170,9 @@ def execute_job(
     )
     if active_lease_duration <= timedelta(0):
         raise ValueError("lease_duration must be positive")
+    timing_enabled = timing_sink is not None
+    execution_started = perf_counter() if timing_enabled else 0.0
+    claim_started = perf_counter() if timing_enabled else 0.0
     claim = _claim_job(
         job_id,
         expected_attempt_number=expected_attempt_number,
@@ -160,6 +180,7 @@ def execute_job(
         lease_duration=active_lease_duration,
         session_factory=factory,
     )
+    claim_seconds = perf_counter() - claim_started if timing_enabled else 0.0
     if isinstance(claim, ExecutionDisposition):
         return claim
 
@@ -170,10 +191,13 @@ def execute_job(
     }
     logger.info("Worker claim committed", extra={"event": "job.claimed", **log_context})
 
+    computation_started = perf_counter() if timing_enabled else 0.0
     try:
         active_computation = computation or computation_for(claim.job_type)
         result = active_computation(claim.parameters)
     except Exception as error:
+        computation_seconds = perf_counter() - computation_started if timing_enabled else 0.0
+        finalize_started = perf_counter() if timing_enabled else 0.0
         disposition = _finish_failure(
             job_id,
             claim,
@@ -181,6 +205,16 @@ def execute_job(
             retry_policy=policy,
             random_source=random_source,
             session_factory=factory,
+        )
+        finalize_seconds = perf_counter() - finalize_started if timing_enabled else 0.0
+        _emit_execution_timing(
+            timing_sink,
+            job_id=job_id,
+            disposition=disposition,
+            claim_seconds=claim_seconds,
+            computation_seconds=computation_seconds,
+            finalize_seconds=finalize_seconds,
+            execution_started=execution_started,
         )
         event = (
             "job.retry_scheduled"
@@ -199,9 +233,73 @@ def execute_job(
         )
         return disposition
 
+    computation_seconds = perf_counter() - computation_started if timing_enabled else 0.0
+    finalize_started = perf_counter() if timing_enabled else 0.0
     _finish_succeeded(job_id, claim, result=result, session_factory=factory)
+    finalize_seconds = perf_counter() - finalize_started if timing_enabled else 0.0
+    _emit_execution_timing(
+        timing_sink,
+        job_id=job_id,
+        disposition=ExecutionDisposition.COMPLETED,
+        claim_seconds=claim_seconds,
+        computation_seconds=computation_seconds,
+        finalize_seconds=finalize_seconds,
+        execution_started=execution_started,
+    )
     logger.info("Job result committed", extra={"event": "job.succeeded", **log_context})
     return ExecutionDisposition.COMPLETED
+
+
+def _emit_execution_timing(
+    sink: ExecutionTimingSink | None,
+    *,
+    job_id: UUID,
+    disposition: ExecutionDisposition,
+    claim_seconds: float,
+    computation_seconds: float,
+    finalize_seconds: float,
+    execution_started: float,
+) -> None:
+    if sink is None:
+        return
+    total_seconds = perf_counter() - execution_started
+    persistence_seconds = claim_seconds + finalize_seconds
+    timing = ExecutionTiming(
+        job_id=job_id,
+        disposition=disposition,
+        claim_seconds=claim_seconds,
+        computation_seconds=computation_seconds,
+        finalize_seconds=finalize_seconds,
+        persistence_seconds=persistence_seconds,
+        overhead_seconds=max(0.0, total_seconds - computation_seconds),
+        total_seconds=total_seconds,
+    )
+    try:
+        sink(timing)
+    except Exception:
+        logger.warning(
+            "Execution timing sink failed",
+            extra={"event": "job.execution_timing_failed", "job_id": str(job_id)},
+            exc_info=True,
+        )
+
+
+def log_execution_timing(timing: ExecutionTiming) -> None:
+    """Write opt-in phase timings without changing durable execution state."""
+    logger.info(
+        "Job execution phase timing",
+        extra={
+            "event": "job.execution_timing",
+            "job_id": str(timing.job_id),
+            "disposition": timing.disposition.value,
+            "claim_seconds": timing.claim_seconds,
+            "computation_seconds": timing.computation_seconds,
+            "finalize_seconds": timing.finalize_seconds,
+            "persistence_seconds": timing.persistence_seconds,
+            "overhead_seconds": timing.overhead_seconds,
+            "total_seconds": timing.total_seconds,
+        },
+    )
 
 
 def _claim_job(

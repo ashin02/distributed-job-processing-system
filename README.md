@@ -1265,6 +1265,8 @@ transitions prevent more than one authoritative result.
 | M5A-2 | Isolated anonymous demo access and abuse protections | Complete |
 | M5B | Animated live Queue → Worker → Completion console | Implemented; verification pending |
 | M5C | Backend-controlled Computational Load Demo | Implemented; verification pending |
+| M5E-A | Reproducible authenticated job performance harness | Complete |
+| M5E-D | CPU scaling bottleneck diagnostics | Complete |
 
 ### M5 — Interactive Demo and Reliability Evidence
 
@@ -1536,25 +1538,176 @@ The visualization must reflect durable attempt state and real recovery timing.
 
 Any infrastructure-control endpoint must be restricted to a local or explicitly protected demo environment. Do not expose Docker control access through a public API.
 
-#### Performance Experiments
+#### M5E-A Reproducible Performance Benchmark
 
-Compare worker configurations:
+The standalone `scripts/benchmark_jobs.py` client submits a fixed batch of
+authenticated `monte_carlo_pi` jobs through `POST /v1/jobs`. Every request uses
+a unique `m5e-a:<run-id>:<index>` idempotency key. The client polls each job's
+authenticated detail endpoint until it reaches `SUCCEEDED`, `FAILED`, or
+`CANCELLED`, or until the explicit benchmark timeout expires.
 
-- 1 worker.
-- 2 workers.
-- 4 workers.
+Metrics use authoritative server timestamps rather than the benchmark host's
+wall clock:
 
-Measure:
+- Queue latency: `started_at - created_at`. This includes transactional outbox
+  and broker wait time before a worker starts execution.
+- Execution latency: `completed_at - started_at`.
+- End-to-end latency: `completed_at - created_at`.
+- Throughput: terminal jobs divided by the interval from the earliest
+  `created_at` to the latest `completed_at`.
+- Failure rate: `FAILED` plus `CANCELLED` jobs divided by terminal jobs.
+- p50 and p95 use deterministic linear interpolation (Hyndman-Fan type 7).
 
-- Completed jobs per second.
-- Job waiting time.
-- End-to-end completion latency.
-- Queue-depth behavior.
-- Failure recovery timing.
+Metrics with missing timestamps exclude that job and report their sample
+count. Submission errors, polling timeouts, non-terminal jobs, and job errors
+remain visible in the output. The command returns exit status 2 when any
+submission fails or any accepted job is still non-terminal at the timeout.
+Terminal job failures are valid benchmark results and are reported through
+`failure_rate`.
 
-Use fixed workload settings and record the test environment.
+The JSON output contains configuration, environment metadata, summary metrics,
+submission errors, and per-job records. The CSV contains one row per job or
+failed submission, per-job latencies, and repeated flattened summary metrics.
+The bearer token is never written to either output.
 
-Do not invent benchmark results or assume linear scaling.
+Install the development environment and start the complete Compose stack:
+
+```bash
+make install
+make dev-up
+export COMPUTEGRID_DEVELOPMENT_API_TOKEN='the value configured in .env'
+```
+
+Use the same job count, sample count, submission concurrency, poll interval,
+and Celery concurrency for every comparison. The following sequence fixes
+Celery concurrency at one process per replica and varies only replica count:
+
+```bash
+# Run 1: one worker replica
+COMPUTEGRID_WORKER_CONCURRENCY=1 docker compose up -d --no-deps \
+  --scale worker=1 --force-recreate worker
+docker compose ps worker
+.venv/bin/python scripts/benchmark_jobs.py \
+  --jobs 40 --samples 10000000 --submission-concurrency 8 \
+  --worker-replicas 1 --celery-concurrency 1 \
+  --cpu-limit none-compose --memory-limit none-compose \
+  --output-prefix benchmark-results/m5e-a-workers-1
+
+# Run 2: two worker replicas
+COMPUTEGRID_WORKER_CONCURRENCY=1 docker compose up -d --no-deps \
+  --scale worker=2 --force-recreate worker
+docker compose ps worker
+.venv/bin/python scripts/benchmark_jobs.py \
+  --jobs 40 --samples 10000000 --submission-concurrency 8 \
+  --worker-replicas 2 --celery-concurrency 1 \
+  --cpu-limit none-compose --memory-limit none-compose \
+  --output-prefix benchmark-results/m5e-a-workers-2
+
+# Run 3: four worker replicas
+COMPUTEGRID_WORKER_CONCURRENCY=1 docker compose up -d --no-deps \
+  --scale worker=4 --force-recreate worker
+docker compose ps worker
+.venv/bin/python scripts/benchmark_jobs.py \
+  --jobs 40 --samples 10000000 --submission-concurrency 8 \
+  --worker-replicas 4 --celery-concurrency 1 \
+  --cpu-limit none-compose --memory-limit none-compose \
+  --output-prefix benchmark-results/m5e-a-workers-4
+```
+
+Wait for the worker replicas to be running and for any earlier queue backlog or
+Run Demo feed to finish before each run. Repeat each configuration enough times
+to distinguish stable behavior from noise; do not compare a warm run with a
+cold deployment without recording that distinction.
+
+Compose currently imposes no worker CPU or memory limit. All worker containers
+share the Docker host's allocated CPUs and memory, so record Docker Desktop or
+host CPU model, CPU count, memory allocation, power mode, and competing load
+alongside the generated files. Adding replicas on one host does not add
+physical CPU. The kind manifest is a different environment: each worker Pod
+requests 100m CPU/128 MiB memory and is limited to 1 CPU/512 MiB, while all Pods
+still share the single kind node. Do not combine Compose and kind measurements
+in one scaling comparison.
+
+Additional options include `--timeout`, `--poll-interval`, `--seed`,
+`--api-url`, and `--run-id`; run the script with `--help` for the complete
+interface. Do not invent benchmark results or assume linear scaling.
+
+#### M5E-D CPU Scaling Bottleneck Diagnostics
+
+The standalone `scripts/benchmark_cpu_scaling.py` benchmark calls the exact
+production `monte_carlo_pi` function without a database, broker, Celery, or HTTP
+server. It does not copy, optimize, vectorize, or otherwise rewrite the
+computation. Each child process receives the same fixed sample count and seed.
+
+By default it runs equal batches with 1, 2, and 4 process-pool workers and
+reports:
+
+- Batch wall-clock time, including process-pool dispatch and lifecycle cost.
+- Summed child-process CPU time and coordinator-process CPU time.
+- Median per-job pure-computation wall and CPU time measured immediately around
+  the production function call inside each child.
+- Job and sample throughput.
+- Speedup relative to one process.
+- Scaling efficiency: `speedup / process_count`.
+- Average CPU cores used: total process CPU time divided by wall time.
+
+Run the CPU-only diagnostic on an otherwise idle target host:
+
+```bash
+.venv/bin/python scripts/benchmark_cpu_scaling.py \
+  --processes 1,2,4 \
+  --jobs 8 \
+  --repeats 3 \
+  --samples 10000000 \
+  --seed 42 \
+  --output-prefix benchmark-results/m5e-d-cpu-scaling
+```
+
+The command writes JSON with platform and logical-CPU metadata plus CSV with
+one row per process count. Keep CPU affinity, Docker Desktop CPU allocation,
+power mode, thermal state, and competing host load fixed. Run it multiple times
+and retain every result rather than selecting the best run. If the host has
+fewer than four physical cores, the four-process result diagnoses contention;
+it does not represent four independent machines.
+
+Optional worker phase timing is disabled by default. `execute_job` accepts a
+timing sink that receives claim, pure computation, finalize, persistence
+(`claim + finalize`), non-computation overhead, and total wall times. For a
+temporary Compose diagnostic worker, first stop the normal workers, then run:
+
+```bash
+docker compose stop worker
+COMPUTEGRID_WORKER_CONCURRENCY=1 docker compose run --rm --no-deps \
+  -e COMPUTEGRID_EXECUTION_TIMING_ENABLED=true worker
+```
+
+In another terminal, submit an M5E-A batch. The temporary worker emits
+`job.execution_timing` JSON log records. Stop it after the batch and restore the
+normal worker replicas. The timing hook only observes phase boundaries; it does
+not change computation inputs, retry rules, state transitions, or results.
+
+To measure observer overhead, run identical M5E-A batches against the same
+worker configuration at both polling cadences:
+
+```bash
+.venv/bin/python scripts/benchmark_jobs.py \
+  --jobs 40 --samples 10000000 --submission-concurrency 8 \
+  --poll-interval 0.5 --worker-replicas 1 --celery-concurrency 1 \
+  --output-prefix benchmark-results/m5e-d-poll-0.5
+
+.venv/bin/python scripts/benchmark_jobs.py \
+  --jobs 40 --samples 10000000 --submission-concurrency 8 \
+  --poll-interval 2.0 --worker-replicas 1 --celery-concurrency 1 \
+  --output-prefix benchmark-results/m5e-d-poll-2.0
+```
+
+Compare `metrics.polling.request_count`, `request_failures`,
+`aggregate_http_seconds`, and `polling_wall_seconds` in the JSON files. The
+server-timestamp latency and throughput metrics are intentionally unaffected by
+how soon the client observes completion; a longer polling interval can increase
+the benchmark client's wall time while reducing GET request load. Use distinct
+output prefixes and the default unique run IDs so the two batches do not reuse
+idempotency keys.
 
 #### Public Demonstration
 

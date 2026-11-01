@@ -12,6 +12,7 @@ from computegrid_api.db.models import AttemptState, Job, JobState, OutboxEvent
 from computegrid_api.db.session import SessionFactory
 from computegrid_api.jobs.execution import (
     ExecutionDisposition,
+    ExecutionTiming,
     RetryableExecutionError,
     RetryPolicy,
     execute_job,
@@ -111,6 +112,32 @@ def test_execution_persists_attempt_and_result_idempotently(
         assert job.attempts[0].state == AttemptState.SUCCEEDED
         assert job.attempts[0].worker_id == "worker-1"
         assert job.attempts[0].finished_at is not None
+
+
+def test_optional_execution_timing_separates_compute_and_persistence(
+    session_factory: SessionFactory,
+) -> None:
+    job_id = create_job(session_factory, "timed-execution")
+    timings: list[ExecutionTiming] = []
+
+    disposition = execute_job(
+        job_id,
+        worker_id="timed-worker",
+        session_factory=session_factory,
+        timing_sink=timings.append,
+    )
+
+    assert disposition == ExecutionDisposition.COMPLETED
+    assert len(timings) == 1
+    timing = timings[0]
+    assert timing.disposition == ExecutionDisposition.COMPLETED
+    assert timing.computation_seconds > 0
+    assert timing.claim_seconds > 0
+    assert timing.finalize_seconds > 0
+    assert timing.persistence_seconds == pytest.approx(
+        timing.claim_seconds + timing.finalize_seconds
+    )
+    assert timing.total_seconds >= timing.computation_seconds
 
 
 def test_execution_dispatches_weighted_max_cut_job(

@@ -18,6 +18,7 @@ apps/web/dist/
 
 # Coverage output
 .coverage
+benchmark-results/
 htmlcov/
 apps/web/coverage/
 

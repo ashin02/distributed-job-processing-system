@@ -114,6 +114,7 @@ services:
         condition: service_healthy
 
   worker:
+    scale: 4
     build: .
     command:
       [
@@ -124,7 +125,7 @@ services:
         "computegrid_api.celery_app:celery_app",
         "worker",
         "--loglevel=INFO",
-        "--concurrency=${COMPUTEGRID_WORKER_CONCURRENCY:-2}",
+        "--concurrency=${COMPUTEGRID_WORKER_CONCURRENCY:-1}",
       ]
     environment: *computegrid-environment
     restart: unless-stopped

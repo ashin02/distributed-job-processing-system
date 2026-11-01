@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import socket
 from uuid import UUID
 
@@ -9,13 +10,22 @@ from celery import Celery, Task
 from celery.exceptions import Reject
 
 from computegrid_api.config import get_broker_settings, get_lease_settings
-from computegrid_api.jobs.execution import ExecutionDisposition, execute_job
+from computegrid_api.jobs.execution import (
+    ExecutionDisposition,
+    execute_job,
+    log_execution_timing,
+)
 from computegrid_api.logging_config import configure_logging
 
 configure_logging("worker")
 
 broker_settings = get_broker_settings()
 lease_settings = get_lease_settings()
+execution_timing_enabled = os.getenv("COMPUTEGRID_EXECUTION_TIMING_ENABLED", "").lower() in {
+    "1",
+    "true",
+    "yes",
+}
 
 celery_app = Celery("computegrid", broker=broker_settings.broker_url)
 celery_app.conf.update(
@@ -47,6 +57,7 @@ def _execute_job_task(task: Task, job_id: str, expected_attempt_number: int = 1)
         UUID(job_id),
         expected_attempt_number=expected_attempt_number,
         worker_id=worker_id,
+        timing_sink=log_execution_timing if execution_timing_enabled else None,
     )
     if disposition == ExecutionDisposition.IN_PROGRESS:
         raise Reject("job execution is already in progress", requeue=True)

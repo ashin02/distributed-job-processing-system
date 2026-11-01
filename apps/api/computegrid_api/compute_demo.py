@@ -11,6 +11,12 @@ from computegrid_api.api.schemas import JobCreateRequest
 from computegrid_api.config import ComputeDemoSettings
 from computegrid_api.db.models import DemoRun, Job, JobState
 from computegrid_api.db.session import SessionFactory
+from computegrid_api.jobs.admission import (
+    AdmissionLimits,
+    JobCapacityExceededError,
+    acquire_admission_lock,
+    admit_one_job,
+)
 from computegrid_api.jobs.repository import build_job_accepted_event, request_hash
 
 TERMINAL = (JobState.SUCCEEDED, JobState.FAILED, JobState.CANCELLED)
@@ -62,9 +68,7 @@ class RunProgress(BaseModel):
 
 
 def lock_and_time(session: Session, now: datetime | None) -> datetime:
-    # Shared with ordinary anonymous admission. No workers acquire this lock.
-    session.execute(text("SET LOCAL statement_timeout = '5s'"))
-    session.execute(text("SELECT pg_advisory_xact_lock(1129270607)"))
+    acquire_admission_lock(session)
     if now is not None:
         return now
     current: datetime = session.execute(select(func.clock_timestamp())).scalar_one()
@@ -92,7 +96,7 @@ def start_run(factory: SessionFactory, client_id: str, key: str,
         retained_runs = session.scalar(select(func.count()).select_from(DemoRun)) or 0
         if retained_runs >= settings.compute_demo_retained_capacity:
             raise FeedRejected("Retained demo run capacity exhausted")
-        if not capacity_available(session, settings):
+        if not capacity_available(session, settings, now=current):
             raise FeedRejected("Global job capacity exhausted")
         run = DemoRun(
             id=uuid4(), client_id=client_id, request_key=key, started_at=current,
@@ -105,12 +109,24 @@ def start_run(factory: SessionFactory, client_id: str, key: str,
         return run.id
 
 
-def capacity_available(session: Session, settings: ComputeDemoSettings) -> bool:
-    active = session.scalar(select(func.count()).select_from(Job).where(
-        Job.state.not_in(TERMINAL))) or 0
-    retained = session.scalar(select(func.count()).select_from(Job)) or 0
-    return (active < settings.compute_demo_active_capacity
-            and retained < settings.compute_demo_retained_capacity)
+def capacity_available(
+    session: Session,
+    settings: ComputeDemoSettings,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    try:
+        admit_one_job(
+            session,
+            AdmissionLimits(
+                max_active_global=settings.compute_demo_active_capacity,
+                max_retained_global=settings.compute_demo_retained_capacity,
+            ),
+            now=now,
+        )
+    except JobCapacityExceededError:
+        return False
+    return True
 
 
 def advance_feeds(factory: SessionFactory, settings: ComputeDemoSettings,
@@ -124,7 +140,7 @@ def advance_feeds(factory: SessionFactory, settings: ComputeDemoSettings,
             DemoRun.submitted < DemoRun.max_jobs).order_by(DemoRun.next_at).limit(4))
         for run in runs:
             run.next_at = current + timedelta(seconds=run.interval_seconds)
-            if not capacity_available(session, settings):
+            if not capacity_available(session, settings, now=current):
                 run.reason = "Global job capacity exhausted; feed throttled"
                 continue
             admission_time = now or session.execute(select(func.clock_timestamp())).scalar_one()

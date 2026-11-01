@@ -6,13 +6,19 @@ from hashlib import sha256
 from json import dumps
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from computegrid_api.api.schemas import JobCreateRequest
-from computegrid_api.db.models import Job, JobState, OutboxEvent
+from computegrid_api.db.models import Job, OutboxEvent
 from computegrid_api.db.session import SessionFactory, get_session_factory, transaction
+from computegrid_api.jobs.admission import (
+    AdmissionLimits,
+    JobCapacityExceededError,
+    acquire_admission_lock,
+    admit_one_job,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -85,9 +91,10 @@ class JobRepository:
     ) -> CreatedJob:
         """Create a job and outbox event, or return an identical prior request."""
         payload_hash = request_hash(request)
-        existing = self._find_by_idempotency_key(client_id, idempotency_key)
-        if existing is not None:
-            return self._resolve_existing(existing, payload_hash)
+        if limits is None:
+            existing = self._find_by_idempotency_key(client_id, idempotency_key)
+            if existing is not None:
+                return self._resolve_existing(existing, payload_hash)
 
         job = Job(
             id=uuid4(),
@@ -102,9 +109,7 @@ class JobRepository:
         try:
             with transaction(self._session_factory) as session:
                 if limits is not None:
-                    # Serialize anonymous admission across API processes without
-                    # holding a lock during job execution.
-                    session.execute(text("SELECT pg_advisory_xact_lock(1129270607)"))
+                    acquire_admission_lock(session)
                     existing_after_lock = session.scalar(
                         select(Job).where(
                             Job.client_id == client_id,
@@ -113,32 +118,19 @@ class JobRepository:
                     )
                     if existing_after_lock is not None:
                         return self._resolve_existing(existing_after_lock, payload_hash)
-                    active_states = (
-                        JobState.ACCEPTED,
-                        JobState.QUEUED,
-                        JobState.RUNNING,
-                        JobState.RETRY_WAIT,
-                    )
-                    global_active = session.scalar(
-                        select(func.count()).select_from(Job).where(Job.state.in_(active_states))
-                    )
-                    client_active = session.scalar(
-                        select(func.count())
-                        .select_from(Job)
-                        .where(Job.client_id == client_id, Job.state.in_(active_states))
-                    )
-                    global_retained = session.scalar(select(func.count()).select_from(Job))
-                    client_retained = session.scalar(
-                        select(func.count()).select_from(Job).where(Job.client_id == client_id)
-                    )
-                    if (global_active or 0) >= limits.max_active_global or (
-                        client_active or 0
-                    ) >= limits.max_active_per_client:
-                        raise DemoCapacityExceededError
-                    if (global_retained or 0) >= limits.max_retained_global or (
-                        client_retained or 0
-                    ) >= limits.max_retained_per_client:
-                        raise DemoCapacityExceededError
+                    try:
+                        admit_one_job(
+                            session,
+                            AdmissionLimits(
+                                max_active_global=limits.max_active_global,
+                                max_retained_global=limits.max_retained_global,
+                                client_id=client_id,
+                                max_active_per_client=limits.max_active_per_client,
+                                max_retained_per_client=limits.max_retained_per_client,
+                            ),
+                        )
+                    except JobCapacityExceededError as error:
+                        raise DemoCapacityExceededError from error
                 session.add_all([job, event])
                 session.flush()
         except IntegrityError:
