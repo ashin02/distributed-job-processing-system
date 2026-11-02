@@ -108,15 +108,15 @@ k8s-image:
 k8s-configure:
 	@command -v kubectl >/dev/null 2>&1 || { echo "error: kubectl is required" >&2; exit 1; }
 	@kubectl config get-contexts -o name 2>/dev/null | grep -Fxq $(K8S_CONTEXT) || { echo "error: context '$(K8S_CONTEXT)' is missing" >&2; exit 1; }
-	kubectl --context $(K8S_CONTEXT) apply -f k8s/00-namespace.yaml
-	kubectl --context $(K8S_CONTEXT) --namespace $(K8S_NAMESPACE) apply -f k8s/10-configmap.yaml
+	kubectl --context $(K8S_CONTEXT) apply -f k8s/namespace.yaml
+	kubectl --context $(K8S_CONTEXT) --namespace $(K8S_NAMESPACE) apply -f k8s/configmap.yaml
 	bash scripts/k8s-create-secret.sh
 
 k8s-dependencies:
 	@command -v kubectl >/dev/null 2>&1 || { echo "error: kubectl is required" >&2; exit 1; }
 	@kubectl --context $(K8S_CONTEXT) get namespace $(K8S_NAMESPACE) >/dev/null 2>&1 || { echo "error: run 'make k8s-configure' first" >&2; exit 1; }
-	kubectl --context $(K8S_CONTEXT) --namespace $(K8S_NAMESPACE) apply -f k8s/20-postgres.yaml
-	kubectl --context $(K8S_CONTEXT) --namespace $(K8S_NAMESPACE) apply -f k8s/30-rabbitmq.yaml
+	kubectl --context $(K8S_CONTEXT) --namespace $(K8S_NAMESPACE) apply -f k8s/postgres.yaml
+	kubectl --context $(K8S_CONTEXT) --namespace $(K8S_NAMESPACE) apply -f k8s/rabbitmq.yaml
 	kubectl --context $(K8S_CONTEXT) --namespace $(K8S_NAMESPACE) rollout status statefulset/postgres --timeout=180s
 	kubectl --context $(K8S_CONTEXT) --namespace $(K8S_NAMESPACE) rollout status statefulset/rabbitmq --timeout=240s
 
@@ -126,7 +126,7 @@ k8s-migrate:
 	kubectl --context $(K8S_CONTEXT) --namespace $(K8S_NAMESPACE) rollout status statefulset/postgres --timeout=180s
 	@echo "Recreating only the one-shot ComputeGrid migration Job; persistent data is not reset."
 	kubectl --context $(K8S_CONTEXT) --namespace $(K8S_NAMESPACE) delete job computegrid-migrate --ignore-not-found --wait=true
-	kubectl --context $(K8S_CONTEXT) --namespace $(K8S_NAMESPACE) apply -f k8s/40-migrate.yaml
+	kubectl --context $(K8S_CONTEXT) --namespace $(K8S_NAMESPACE) apply -f k8s/migrate.yaml
 	@kubectl --context $(K8S_CONTEXT) --namespace $(K8S_NAMESPACE) wait --for=condition=complete job/computegrid-migrate --timeout=180s || { \
 		echo "error: migration did not complete; recent logs follow" >&2; \
 		kubectl --context $(K8S_CONTEXT) --namespace $(K8S_NAMESPACE) logs job/computegrid-migrate --all-containers=true --tail=100 >&2 || true; \
@@ -138,7 +138,7 @@ k8s-apps:
 	@kubectl --context $(K8S_CONTEXT) --namespace $(K8S_NAMESPACE) wait --for=condition=complete job/computegrid-migrate --timeout=1s >/dev/null 2>&1 || { echo "error: a completed migration Job is required; run 'make k8s-migrate' first" >&2; exit 1; }
 	kubectl --context $(K8S_CONTEXT) --namespace $(K8S_NAMESPACE) rollout status statefulset/postgres --timeout=180s
 	kubectl --context $(K8S_CONTEXT) --namespace $(K8S_NAMESPACE) rollout status statefulset/rabbitmq --timeout=240s
-	kubectl --context $(K8S_CONTEXT) --namespace $(K8S_NAMESPACE) apply -f k8s/50-applications.yaml
+	kubectl --context $(K8S_CONTEXT) --namespace $(K8S_NAMESPACE) apply -f k8s/applications.yaml
 	kubectl --context $(K8S_CONTEXT) --namespace $(K8S_NAMESPACE) rollout restart deployment/computegrid-api deployment/computegrid-relay deployment/computegrid-worker
 	kubectl --context $(K8S_CONTEXT) --namespace $(K8S_NAMESPACE) rollout status deployment/computegrid-api --timeout=180s
 	kubectl --context $(K8S_CONTEXT) --namespace $(K8S_NAMESPACE) rollout status deployment/computegrid-relay --timeout=180s

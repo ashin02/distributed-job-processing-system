@@ -132,6 +132,13 @@ The project includes unit, integration, end-to-end, and fault-injection tests. G
 
 The backend was also deployed and validated on a local Kubernetes cluster using kind, including worker scaling, rolling restarts, and in-flight worker failure recovery.
 
+`make k8s-deploy` applies the manifests in `k8s/` explicitly in this order:
+`namespace.yaml`, `configmap.yaml`, `postgres.yaml`, `rabbitmq.yaml`,
+`migrate.yaml`, then `applications.yaml`. The Makefile creates the Secret after
+configuration, waits for the dependencies to become ready, and requires migration
+completion before deploying the applications. Deployment order does not depend on
+filename sorting.
+
 ## Development History
 
 For architecture decisions, engineering challenges, and
